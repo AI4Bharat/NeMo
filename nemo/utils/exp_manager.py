@@ -21,6 +21,7 @@ import warnings
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
+import shutil
 from shutil import copy, move
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -616,9 +617,12 @@ def check_resume(
                 if fold.is_dir():
                     run_count += 1
             new_run_dir = Path(Path(log_dir) / f"run_{run_count}")
-            new_run_dir.mkdir()
+            new_run_dir.mkdir(exist_ok=True)
             for _file in files_to_move:
-                move(str(_file), str(new_run_dir))
+                try:
+                    move(str(_file), str(new_run_dir))
+                except (FileNotFoundError, shutil.Error) as e:
+                    logging.warning(e)
 
 
 def check_explicit_log_dir(

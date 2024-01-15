@@ -358,7 +358,7 @@ class ModelPT(LightningModule, Model):
 
         def maybe_make_save_dir(path: 'pathlib.Path'):
             if not path.parent.exists():
-                path.parent.mkdir(parents=True)
+                path.parent.mkdir(parents=True, exist_ok=True)
 
         save_path = Path(save_path).expanduser().resolve()
         app_state = AppState()
