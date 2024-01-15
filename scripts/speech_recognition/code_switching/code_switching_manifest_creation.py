@@ -36,8 +36,8 @@ parser.add_argument(
 parser.add_argument(
     "--id_language2", default=None, type=str, help='Identifier for language 2, eg: en, es, hi', required=True
 )
-parser.add_argument("--max_sample_duration_sec", default=19, type=int, help='Maximum duration of sample (sec)')
-parser.add_argument("--min_sample_duration_sec", default=16, type=int, help='Minimum duration of sample (sec)')
+parser.add_argument("--max_sample_duration_sec", default=30, type=int, help='Maximum duration of sample (sec)')
+parser.add_argument("--min_sample_duration_sec", default=20, type=int, help='Minimum duration of sample (sec)')
 parser.add_argument("--dataset_size_required_hrs", default=1, type=int, help='Duration of dataset required (hrs)')
 
 args = parser.parse_args()

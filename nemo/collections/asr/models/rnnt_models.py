@@ -482,16 +482,26 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, Exportable):
             # support datasets that are lists of lists
             collate_fn = dataset.datasets[0].datasets[0].collate_fn
 
-        return torch.utils.data.DataLoader(
-            dataset=dataset,
-            batch_size=config['batch_size'],
-            collate_fn=collate_fn,
-            drop_last=config.get('drop_last', False),
-            shuffle=shuffle,
-            num_workers=config.get('num_workers', 0),
-            pin_memory=config.get('pin_memory', False),
-        )
-
+        if config.get('shuffle', False):
+            return torch.utils.data.DataLoader(
+                dataset=dataset,
+                batch_size=config['batch_size'],
+                collate_fn=collate_fn,
+                drop_last=config.get('drop_last', False),
+                shuffle=config['shuffle'],
+                num_workers=config.get('num_workers', 0),
+                pin_memory=config.get('pin_memory', False),
+            )
+        else:
+            return torch.utils.data.DataLoader(
+                dataset=dataset,
+                batch_size=config['batch_size'],
+                collate_fn=collate_fn,
+                drop_last=config.get('drop_last', False),
+                num_workers=config.get('num_workers', 0),
+                pin_memory=config.get('pin_memory', False),
+            )
+            
     def setup_training_data(self, train_data_config: Optional[Union[DictConfig, Dict]]):
         """
         Sets up the training data loader via a Dict-like object.
@@ -507,8 +517,8 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, Exportable):
             -   :class:`~nemo.collections.asr.data.audio_to_text.TarredAudioToBPEDataset`
             -   :class:`~nemo.collections.asr.data.audio_to_text_dali.AudioToCharDALIDataset`
         """
-        if 'shuffle' not in train_data_config:
-            train_data_config['shuffle'] = True
+        # if 'shuffle' not in train_data_config:
+        #     train_data_config['shuffle'] = True
 
         # preserve config
         self._update_dataset_config(dataset_name='train', config=train_data_config)
@@ -602,7 +612,7 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, Exportable):
 
     @typecheck()
     def forward(
-        self, input_signal=None, input_signal_length=None, processed_signal=None, processed_signal_length=None
+        self, input_signal=None, input_signal_length=None, processed_signal=None, processed_signal_length=None, language_ids=None
     ):
         """
         Forward pass of the model. Note that for RNNT Models, the forward pass of the model is a 3 step process,

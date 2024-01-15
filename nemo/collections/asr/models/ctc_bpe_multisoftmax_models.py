@@ -23,15 +23,18 @@ from nemo.collections.asr.data import audio_to_text_dataset
 from nemo.collections.asr.data.audio_to_text_dali import AudioToBPEDALIDataset
 from nemo.collections.asr.losses.ctc import CTCLoss
 from nemo.collections.asr.metrics.wer_bpe import WERBPE, CTCBPEDecoding, CTCBPEDecodingConfig
+from nemo.collections.asr.parts.utils.audio_utils import ChannelSelectorType
 from nemo.collections.asr.models.ctc_models import EncDecCTCModel
 from nemo.collections.asr.parts.mixins import ASRBPEMixin
-from nemo.core.classes.common import PretrainedModelInfo
+from nemo.core.classes.common import PretrainedModelInfo, typecheck
 from nemo.utils import logging, model_utils
+from nemo.core.classes.mixins import AccessMixin
+from nemo.core.neural_types import AudioSignal, LabelsType, LengthsType, LogprobsType, NeuralType, SpectrogramType, StringType
 
 __all__ = ['EncDecCTCModelBPE']
 
 
-class EncDecCTCModelBPE(EncDecCTCModel, ASRBPEMixin):
+class EncDecCTCMultiSoftmaxModelBPE(EncDecCTCModel, ASRBPEMixin):
     """Encoder decoder CTC-based models with Byte Pair Encoding."""
 
     def __init__(self, cfg: DictConfig, trainer=None):
@@ -51,7 +54,7 @@ class EncDecCTCModelBPE(EncDecCTCModel, ASRBPEMixin):
         # Set the new vocabulary
         with open_dict(cfg):
             # sidestepping the potential overlapping tokens issue in aggregate tokenizers
-            if self.tokenizer_type == "agg" or self.tokenizer_type == "multilingual":
+            if self.tokenizer_type == "agg":
                 cfg.decoder.vocabulary = ListConfig(vocabulary)
             else:
                 cfg.decoder.vocabulary = ListConfig(list(vocabulary.keys()))
@@ -69,39 +72,43 @@ class EncDecCTCModelBPE(EncDecCTCModel, ASRBPEMixin):
 
         super().__init__(cfg=cfg, trainer=trainer)
         
-        # Multisoftmax
-        if (self.tokenizer_type == "agg" or self.tokenizer_type == "multilingual") and "multisoftmax" in cfg.decoder:
+        self.loss = CTCLoss(
+            num_classes=self.decoder._num_classes,
+            zero_infinity=True,
+            reduction=self._cfg.get("ctc_reduction", "mean_batch"),
+        )
+        
+        # # Multisoftmax
+        if self.tokenizer_type == "agg" and "multisoftmax" in cfg.decoder:
             logging.info("Creating masks for multi-softmax layer.")
             self.language_masks = {}
             for language in self.tokenizer.tokenizers_dict.keys():
                 self.language_masks[language] = [(token_language == language)  for _, token_language in self.tokenizer.langs_by_token_id.items()]
                 self.language_masks[language].append(True) # Insert blank token
-            self.loss = CTCLoss(
-                num_classes=self.decoder._num_classes // len(self.tokenizer.tokenizers_dict.keys()),
-                zero_infinity=True,
-                reduction=self._cfg.get("ctc_reduction", "mean_batch"),
-            )
         self.decoder.language_masks = self.language_masks
         
         # Setup decoding objects
         decoding_cfg = self.cfg.get('decoding', None)
+
         # In case decoding config not found, use default config
         if decoding_cfg is None:
             decoding_cfg = OmegaConf.structured(CTCBPEDecodingConfig)
             with open_dict(self.cfg):
                 self.cfg.decoding = decoding_cfg
-        if (self.tokenizer_type == "agg" or self.tokenizer_type == "multilingual") and "multisoftmax" in cfg.decoder:
-            self.decoding = CTCBPEDecoding(self.cfg.decoding, tokenizer=self.tokenizer, blank_id=self.decoder._num_classes//len(self.tokenizer.tokenizers_dict.keys()))
-        else:
-            self.decoding = CTCBPEDecoding(self.cfg.decoding, tokenizer=self.tokenizer)
+
         
-        # Setup metric with decoding strategy
-        self._wer = WERBPE(
-            decoding=self.decoding,
-            use_cer=self._cfg.get('use_cer', False),
-            dist_sync_on_step=True,
-            log_prediction=self._cfg.get("log_prediction", False),
-        )
+        self.decoding = {}
+        for language in self.decoder.languages:
+            self.decoding[language] = CTCBPEDecoding(self.cfg.decoding, tokenizer=self.tokenizer.tokenizers_dict[language])
+
+        self._wer_dict = {}
+        for language in self.decoder.languages:
+            self._wer_dict[language] = WERBPE(
+                decoding=self.decoding[language],
+                use_cer=self._cfg.get('use_cer', False),
+                dist_sync_on_step=True,
+                log_prediction=self._cfg.get("log_prediction", False),
+            )
 
     def _setup_dataloader_from_config(self, config: Optional[Dict]):
         dataset = audio_to_text_dataset.get_audio_to_text_bpe_dataset_from_config(
@@ -138,7 +145,7 @@ class EncDecCTCModelBPE(EncDecCTCModel, ASRBPEMixin):
                 batch_size=config['batch_size'],
                 collate_fn=collate_fn,
                 drop_last=config.get('drop_last', False),
-                shuffle=config['shuffle'],
+                shuffle=shuffle,
                 num_workers=config.get('num_workers', 0),
                 pin_memory=config.get('pin_memory', False),
             )
@@ -194,6 +201,274 @@ class EncDecCTCModelBPE(EncDecCTCModel, ASRBPEMixin):
 
         temporary_datalayer = self._setup_dataloader_from_config(config=DictConfig(dl_config))
         return temporary_datalayer
+
+    # PTL-specific methods
+    def training_step(self, batch, batch_nb):
+        # Reset access registry
+        if AccessMixin.is_access_enabled():
+            AccessMixin.reset_registry(self)
+
+        if self.is_interctc_enabled():
+            AccessMixin.set_access_enabled(access_enabled=True)
+
+        if "multisoftmax" not in self.cfg.decoder:
+            signal, signal_len, transcript, transcript_len = batch
+            language = None
+        else:
+            signal, signal_len, transcript, transcript_len, sample_ids, language_ids = batch   
+            assert all(i == language_ids[0] for i in language_ids), f"Language ids are different for a batch -> {language_ids}" 
+            language = language_ids[0]
+        
+        if isinstance(batch, DALIOutputs) and batch.has_processed_signal:
+            log_probs, encoded_len, predictions = self.forward(
+                processed_signal=signal, processed_signal_length=signal_len
+            )
+        else:
+            if "multisoftmax" in self.cfg.decoder:
+                log_probs, encoded_len, predictions = self.forward(input_signal=signal, input_signal_length=signal_len, language_ids=language_ids)
+            else:
+                log_probs, encoded_len, predictions = self.forward(input_signal=signal, input_signal_length=signal_len)
+
+        if hasattr(self, '_trainer') and self._trainer is not None:
+            log_every_n_steps = self._trainer.log_every_n_steps
+        else:
+            log_every_n_steps = 1
+            
+        loss_value = self.loss(
+            log_probs=log_probs, targets=transcript, input_lengths=encoded_len, target_lengths=transcript_len
+        )
+
+        # Add auxiliary losses, if registered
+        loss_value = self.add_auxiliary_losses(loss_value)
+        # only computing WER when requested in the logs (same as done for final-layer WER below)
+        loss_value, tensorboard_logs = self.add_interctc_losses(
+            loss_value, transcript, transcript_len, compute_wer=((batch_nb + 1) % log_every_n_steps == 0)
+        )
+
+        # Reset access registry
+        if AccessMixin.is_access_enabled():
+            AccessMixin.reset_registry(self)
+
+        tensorboard_logs.update(
+            {
+                'train_loss': loss_value,
+                'learning_rate': self._optimizer.param_groups[0]['lr'],
+                'global_step': torch.tensor(self.trainer.global_step, dtype=torch.float32),
+            }
+        )
+
+        if (batch_nb + 1) % log_every_n_steps == 0:
+            self._wer_dict[language].update(
+                predictions=log_probs,
+                targets=transcript,
+                target_lengths=transcript_len,
+                predictions_lengths=encoded_len,
+            )
+            wer, _, _ = self._wer_dict[language].compute()
+            self._wer_dict[language].reset()
+            tensorboard_logs.update({'training_batch_wer': wer})
+
+        return {'loss': loss_value, 'log': tensorboard_logs}
+
+    def predict_step(self, batch, batch_idx, dataloader_idx=0):
+        if "multisoftmax" not in self.cfg.decoder:
+            signal, signal_len, transcript, transcript_len = batch
+            language = None
+        else:
+            signal, signal_len, transcript, transcript_len, sample_ids, language_ids = batch   
+            assert all(i == language_ids[0] for i in language_ids), f"Language ids are different for a batch -> {language_ids}" 
+            language = language_ids[0]
+            
+        if isinstance(batch, DALIOutputs) and batch.has_processed_signal:
+            log_probs, encoded_len, predictions = self.forward(
+                processed_signal=signal, processed_signal_length=signal_len
+            )
+        else:
+            if "multisoftmax" in self.cfg.decoder:
+                log_probs, encoded_len, predictions = self.forward(input_signal=signal, input_signal_length=signal_len, language_ids=language_ids)
+            else:
+                log_probs, encoded_len, predictions = self.forward(input_signal=signal, input_signal_length=signal_len)
+
+        transcribed_texts, _ = self._wer_dict[language].decoding.ctc_decoder_predictions_tensor(
+            decoder_outputs=log_probs, decoder_lengths=encoded_len, return_hypotheses=False,
+        )
+
+        sample_id = sample_id.cpu().detach().numpy()
+        return list(zip(sample_id, transcribed_texts))
+
+    def validation_step(self, batch, batch_idx, dataloader_idx=0):
+        if self.is_interctc_enabled():
+            AccessMixin.set_access_enabled(access_enabled=True)
+
+        if "multisoftmax" not in self.cfg.decoder:
+            signal, signal_len, transcript, transcript_len = batch
+            language = None
+        else:
+            signal, signal_len, transcript, transcript_len, sample_ids, language_ids = batch   
+            assert all(i == language_ids[0] for i in language_ids), f"Language ids are different for a batch -> {language_ids}" 
+            language = language_ids[0]
+            
+        if isinstance(batch, DALIOutputs) and batch.has_processed_signal:
+            log_probs, encoded_len, predictions = self.forward(
+                processed_signal=signal, processed_signal_length=signal_len
+            )
+        else:
+            if "multisoftmax" in self.cfg.decoder:
+                log_probs, encoded_len, predictions = self.forward(input_signal=signal, input_signal_length=signal_len, language_ids=language_ids)
+            else:
+                log_probs, encoded_len, predictions = self.forward(input_signal=signal, input_signal_length=signal_len)
+
+        loss_value = self.loss(
+            log_probs=log_probs, targets=transcript, input_lengths=encoded_len, target_lengths=transcript_len
+        )
+        loss_value, metrics = self.add_interctc_losses(
+            loss_value, transcript, transcript_len, compute_wer=True, log_wer_num_denom=True, log_prefix="val_",
+        )
+
+        self._wer_dict[language].update(
+            predictions=log_probs, targets=transcript, target_lengths=transcript_len, predictions_lengths=encoded_len
+        )
+        wer, wer_num, wer_denom = self._wer_dict[language].compute()
+        self._wer_dict[language].reset()
+        metrics.update({'val_loss': loss_value, 'val_wer_num': wer_num, 'val_wer_denom': wer_denom, 'val_wer': wer})
+
+        self.log('global_step', torch.tensor(self.trainer.global_step, dtype=torch.float32))
+
+        # Reset access registry
+        if AccessMixin.is_access_enabled():
+            AccessMixin.reset_registry(self)
+
+        return metrics
+
+    @torch.no_grad()
+    def transcribe(
+        self,
+        paths2audio_files: List[str],
+        language: str,
+        batch_size: int = 4,
+        logprobs: bool = False,
+        return_hypotheses: bool = False,
+        num_workers: int = 0,
+        channel_selector: Optional[ChannelSelectorType] = None,
+        augmentor: DictConfig = None,
+        verbose: bool = True,
+    ) -> List[str]:
+        """
+        If modify this function, please remember update transcribe_partial_audio() in
+        nemo/collections/asr/parts/utils/trancribe_utils.py
+
+        Uses greedy decoding to transcribe audio files. Use this method for debugging and prototyping.
+
+        Args:
+            paths2audio_files: (a list) of paths to audio files. \
+                Recommended length per file is between 5 and 25 seconds. \
+                But it is possible to pass a few hours long file if enough GPU memory is available.
+            batch_size: (int) batch size to use during inference.
+                Bigger will result in better throughput performance but would use more memory.
+            logprobs: (bool) pass True to get log probabilities instead of transcripts.
+            return_hypotheses: (bool) Either return hypotheses or text
+                With hypotheses can do some postprocessing like getting timestamp or rescoring
+            num_workers: (int) number of workers for DataLoader
+            channel_selector (int | Iterable[int] | str): select a single channel or a subset of channels from multi-channel audio. If set to `'average'`, it performs averaging across channels. Disabled if set to `None`. Defaults to `None`.
+            augmentor: (DictConfig): Augment audio samples during transcription if augmentor is applied.
+            verbose: (bool) whether to display tqdm progress bar
+        Returns:
+            A list of transcriptions (or raw log probabilities if logprobs is True) in the same order as paths2audio_files
+        """
+        if paths2audio_files is None or len(paths2audio_files) == 0:
+            return {}
+
+        if return_hypotheses and logprobs:
+            raise ValueError(
+                "Either `return_hypotheses` or `logprobs` can be True at any given time."
+                "Returned hypotheses will contain the logprobs."
+            )
+
+        if num_workers is None:
+            num_workers = min(batch_size, os.cpu_count() - 1)
+
+        # We will store transcriptions here
+        hypotheses = []
+        all_hypotheses = []
+
+        # Model's mode and device
+        mode = self.training
+        device = next(self.parameters()).device
+        dither_value = self.preprocessor.featurizer.dither
+        pad_to_value = self.preprocessor.featurizer.pad_to
+
+        try:
+            self.preprocessor.featurizer.dither = 0.0
+            self.preprocessor.featurizer.pad_to = 0
+            # Switch model to evaluation mode
+            self.eval()
+            # Freeze the encoder and decoder modules
+            self.encoder.freeze()
+            self.decoder.freeze()
+            logging_level = logging.get_verbosity()
+            logging.set_verbosity(logging.WARNING)
+            # Work in tmp directory - will store manifest file there
+            with tempfile.TemporaryDirectory() as tmpdir:
+                with open(os.path.join(tmpdir, 'manifest.json'), 'w', encoding='utf-8') as fp:
+                    for audio_file in paths2audio_files:
+                        entry = {'audio_filepath': audio_file, 'duration': 100000, 'text': ''}
+                        fp.write(json.dumps(entry) + '\n')
+
+                config = {
+                    'paths2audio_files': paths2audio_files,
+                    'batch_size': batch_size,
+                    'temp_dir': tmpdir,
+                    'num_workers': num_workers,
+                    'channel_selector': channel_selector,
+                }
+
+                if augmentor:
+                    config['augmentor'] = augmentor
+
+                temporary_datalayer = self._setup_transcribe_dataloader(config)
+                for test_batch in tqdm(temporary_datalayer, desc="Transcribing", disable=not verbose):
+                    logits, logits_len, greedy_predictions = self.forward(
+                        input_signal=test_batch[0].to(device), input_signal_length=test_batch[1].to(device)
+                    )
+
+                    if logprobs:
+                        # dump log probs per file
+                        for idx in range(logits.shape[0]):
+                            lg = logits[idx][: logits_len[idx]]
+                            hypotheses.append(lg.cpu().numpy())
+                    else:
+                        current_hypotheses, all_hyp = self.decoding[language].ctc_decoder_predictions_tensor(
+                            logits, decoder_lengths=logits_len, return_hypotheses=return_hypotheses,
+                        )
+                        logits = logits.cpu()
+
+                        if return_hypotheses:
+                            # dump log probs per file
+                            for idx in range(logits.shape[0]):
+                                current_hypotheses[idx].y_sequence = logits[idx][: logits_len[idx]]
+                                if current_hypotheses[idx].alignments is None:
+                                    current_hypotheses[idx].alignments = current_hypotheses[idx].y_sequence
+
+                        if all_hyp is None:
+                            hypotheses += current_hypotheses
+                        else:
+                            hypotheses += all_hyp
+
+                    del greedy_predictions
+                    del logits
+                    del test_batch
+        finally:
+            # set mode back to its original value
+            self.train(mode=mode)
+            self.preprocessor.featurizer.dither = dither_value
+            self.preprocessor.featurizer.pad_to = pad_to_value
+            if mode is True:
+                self.encoder.unfreeze()
+                self.decoder.unfreeze()
+            logging.set_verbosity(logging_level)
+
+        return hypotheses
+
 
     def change_vocabulary(
         self,
@@ -284,14 +559,18 @@ class EncDecCTCModelBPE(EncDecCTCModel, ASRBPEMixin):
         decoding_cls = OmegaConf.create(OmegaConf.to_container(decoding_cls))
         decoding_cfg = OmegaConf.merge(decoding_cls, decoding_cfg)
 
-        self.decoding = CTCBPEDecoding(decoding_cfg=decoding_cfg, tokenizer=self.tokenizer)
+        self.decoding = {}
+        for language in self.decoder.languages:
+            self.decoding[language] = CTCBPEDecoding(self.cfg.decoding, tokenizer=self.tokenizer.tokenizers_dict[language])
 
-        self._wer = WERBPE(
-            decoding=self.decoding,
-            use_cer=self._cfg.get('use_cer', False),
-            log_prediction=self._cfg.get("log_prediction", False),
-            dist_sync_on_step=True,
-        )
+        self._wer_dict = {}
+        for language in self.decoder.languages:
+            self._wer_dict[language] = WERBPE(
+                decoding=self.decoding[language],
+                use_cer=self._cfg.get('use_cer', False),
+                dist_sync_on_step=True,
+                log_prediction=self._cfg.get("log_prediction", False),
+            )
 
         # Update config
         with open_dict(self.cfg.decoder):
@@ -320,14 +599,18 @@ class EncDecCTCModelBPE(EncDecCTCModel, ASRBPEMixin):
         decoding_cls = OmegaConf.create(OmegaConf.to_container(decoding_cls))
         decoding_cfg = OmegaConf.merge(decoding_cls, decoding_cfg)
 
-        self.decoding = CTCBPEDecoding(decoding_cfg=decoding_cfg, tokenizer=self.tokenizer,)
+        self.decoding = {}
+        for language in self.decoder.languages:
+            self.decoding[language] = CTCBPEDecoding(self.cfg.decoding, tokenizer=self.tokenizer.tokenizers_dict[language])
 
-        self._wer = WERBPE(
-            decoding=self.decoding,
-            use_cer=self._wer.use_cer,
-            log_prediction=self._wer.log_prediction,
-            dist_sync_on_step=True,
-        )
+        self._wer_dict = {}
+        for language in self.decoder.languages:
+            self._wer_dict[language] = WERBPE(
+                decoding=self.decoding[language],
+                use_cer=self._cfg.get('use_cer', False),
+                dist_sync_on_step=True,
+                log_prediction=self._cfg.get("log_prediction", False),
+            )
 
         self.decoder.temperature = decoding_cfg.get('temperature', 1.0)
 

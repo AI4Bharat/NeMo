@@ -384,6 +384,7 @@ class AbstractRNNTDecoding(ConfidenceMixin):
         encoded_lengths: torch.Tensor,
         return_hypotheses: bool = False,
         partial_hypotheses: Optional[List[Hypothesis]] = None,
+        lang_ids: List[str] = None,
     ) -> Tuple[List[str], Optional[List[List[str]]], Optional[Union[Hypothesis, NBestHypotheses]]]:
         """
         Decode an encoder output by autoregressive decoding of the Decoder+Joint networks.
@@ -408,9 +409,10 @@ class AbstractRNNTDecoding(ConfidenceMixin):
                     Look at rnnt_utils.NBestHypotheses for more information.
         """
         # Compute hypotheses
+        # print("Decode strategy:", self.cfg.strategy)
         with torch.inference_mode():
             hypotheses_list = self.decoding(
-                encoder_output=encoder_output, encoded_lengths=encoded_lengths, partial_hypotheses=partial_hypotheses
+                encoder_output=encoder_output, encoded_lengths=encoded_lengths, partial_hypotheses=partial_hypotheses, language_ids=lang_ids,
             )  # type: [List[Hypothesis]]
 
             # extract the hypotheses
@@ -424,7 +426,7 @@ class AbstractRNNTDecoding(ConfidenceMixin):
 
             for nbest_hyp in prediction_list:  # type: NBestHypotheses
                 n_hyps = nbest_hyp.n_best_hypotheses  # Extract all hypotheses for this sample
-                decoded_hyps = self.decode_hypothesis(n_hyps)  # type: List[str]
+                decoded_hyps = self.decode_hypothesis(n_hyps, lang_ids)  # type: List[str]
 
                 # If computing timestamps
                 if self.compute_timestamps is True:
@@ -443,7 +445,7 @@ class AbstractRNNTDecoding(ConfidenceMixin):
             return best_hyp_text, all_hyp_text
 
         else:
-            hypotheses = self.decode_hypothesis(prediction_list)  # type: List[str]
+            hypotheses = self.decode_hypothesis(prediction_list, lang_ids)  # type: List[str]
 
             # If computing timestamps
             if self.compute_timestamps is True:
@@ -462,7 +464,7 @@ class AbstractRNNTDecoding(ConfidenceMixin):
             best_hyp_text = [h.text for h in hypotheses]
             return best_hyp_text, None
 
-    def decode_hypothesis(self, hypotheses_list: List[Hypothesis]) -> List[Union[Hypothesis, NBestHypotheses]]:
+    def decode_hypothesis(self, hypotheses_list: List[Hypothesis], lang_ids: List[str] = None) -> List[Union[Hypothesis, NBestHypotheses]]:
         """
         Decode a list of hypotheses into a list of strings.
 
@@ -498,7 +500,10 @@ class AbstractRNNTDecoding(ConfidenceMixin):
                 token_repetitions = [1] * len(alignments)  # preserve number of repetitions per token
                 hypothesis = (prediction, alignments, token_repetitions)
             else:
-                hypothesis = self.decode_tokens_to_str(prediction)
+                if lang_ids is not None:
+                    hypothesis = self.decode_tokens_to_str(prediction, lang_ids[ind])
+                else:
+                    hypothesis = self.decode_tokens_to_str(prediction)
 
                 # TODO: remove
                 # collapse leading spaces before . , ? for PC models

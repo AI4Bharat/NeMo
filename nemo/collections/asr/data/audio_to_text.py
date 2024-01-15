@@ -59,22 +59,27 @@ def _speech_collate_fn(batch, pad_id):
                assumes the signals are 1d torch tensors (i.e. mono audio).
     """
     packed_batch = list(zip(*batch))
-    if len(packed_batch) == 5:
+    if len(packed_batch) == 6: # has language ids
+        _, audio_lengths, _, tokens_lengths, sample_ids, language_ids = packed_batch
+    elif len(packed_batch) == 5: # has sample ids
+        language_ids = None
         _, audio_lengths, _, tokens_lengths, sample_ids = packed_batch
     elif len(packed_batch) == 4:
-        sample_ids = None
+        sample_ids, language_ids = None, None
         _, audio_lengths, _, tokens_lengths = packed_batch
     else:
-        raise ValueError("Expects 4 or 5 tensors in the batch!")
+        raise ValueError("Expects 4 or 5 or 6 tensors in the batch!")
     max_audio_len = 0
     has_audio = audio_lengths[0] is not None
     if has_audio:
         max_audio_len = max(audio_lengths).item()
     max_tokens_len = max(tokens_lengths).item()
-
+    
     audio_signal, tokens = [], []
     for b in batch:
-        if len(b) == 5:
+        if len(b) == 6:
+            sig, sig_len, tokens_i, tokens_i_len, _, _ = b
+        elif len(b) == 5:
             sig, sig_len, tokens_i, tokens_i_len, _ = b
         else:
             sig, sig_len, tokens_i, tokens_i_len = b
@@ -97,12 +102,14 @@ def _speech_collate_fn(batch, pad_id):
         audio_signal, audio_lengths = None, None
     tokens = torch.stack(tokens)
     tokens_lengths = torch.stack(tokens_lengths)
-    if sample_ids is None:
-        return audio_signal, audio_lengths, tokens, tokens_lengths
-    else:
+    if language_ids is not None:
+        sample_ids = torch.tensor(sample_ids, dtype=torch.int32)
+        return audio_signal, audio_lengths, tokens, tokens_lengths, sample_ids, list(language_ids)
+    elif sample_ids is not None:
         sample_ids = torch.tensor(sample_ids, dtype=torch.int32)
         return audio_signal, audio_lengths, tokens, tokens_lengths, sample_ids
-
+    else:
+        return audio_signal, audio_lengths, tokens, tokens_lengths
 
 class ASRManifestProcessor:
     """
@@ -424,6 +431,7 @@ class _AudioTextDataset(Dataset):
             'transcripts': NeuralType(('B', 'T'), LabelsType()),
             'transcript_length': NeuralType(tuple('B'), LengthsType()),
             'sample_id': NeuralType(tuple('B'), LengthsType(), optional=True),
+            'language_id': [NeuralType(('B'), StringType(), optional=True)],
         }
 
     def __init__(
@@ -441,6 +449,7 @@ class _AudioTextDataset(Dataset):
         eos_id: Optional[int] = None,
         pad_id: int = 0,
         return_sample_id: bool = False,
+        return_language_id: bool = False,
         channel_selector: Optional[ChannelSelectorType] = None,
     ):
         if type(manifest_filepath) == str:
@@ -462,6 +471,7 @@ class _AudioTextDataset(Dataset):
         self.featurizer = WaveformFeaturizer(sample_rate=sample_rate, int_values=int_values, augmentor=augmentor)
         self.trim = trim
         self.return_sample_id = return_sample_id
+        self.return_language_id = return_language_id
         self.channel_selector = channel_selector
 
     def get_manifest_sample(self, sample_id):
@@ -486,8 +496,10 @@ class _AudioTextDataset(Dataset):
 
         t, tl = self.manifest_processor.process_text_by_sample(sample=sample)
 
-        if self.return_sample_id:
-            output = f, fl, torch.tensor(t).long(), torch.tensor(tl).long(), index
+        if self.return_language_id:
+            output = f, fl, torch.tensor(t).long(), torch.tensor(tl).long(), index, sample.lang
+        elif self.return_sample_id:
+            output = f, fl, torch.tensor(t).long(), torch.tensor(tl).long(), index       
         else:
             output = f, fl, torch.tensor(t).long(), torch.tensor(tl).long()
 
@@ -530,6 +542,7 @@ class AudioToCharDataset(_AudioTextDataset):
         bos_id: Id of beginning of sequence symbol to append if not None
         eos_id: Id of end of sequence symbol to append if not None
         return_sample_id (bool): whether to return the sample_id as a part of each sample
+        return_language_id (bool): whether to return the language_id as a part of each sample
         channel_selector (int | Iterable[int] | str): select a single channel or a subset of channels from multi-channel audio. If set to `'average'`, it performs averaging across channels. Disabled if set to `None`. Defaults to `None`. Uses zero-based indexing.
     """
 
@@ -543,6 +556,7 @@ class AudioToCharDataset(_AudioTextDataset):
             'transcripts': NeuralType(('B', 'T'), LabelsType()),
             'transcript_length': NeuralType(tuple('B'), LengthsType()),
             'sample_id': NeuralType(tuple('B'), LengthsType(), optional=True),
+            'language_id': [NeuralType(('B'), StringType(), optional=True)],
         }
 
     def __init__(
@@ -564,6 +578,7 @@ class AudioToCharDataset(_AudioTextDataset):
         pad_id: int = 0,
         parser: Union[str, Callable] = 'en',
         return_sample_id: bool = False,
+        return_language_id: bool = False,
         channel_selector: Optional[ChannelSelectorType] = None,
     ):
         self.labels = labels
@@ -586,6 +601,7 @@ class AudioToCharDataset(_AudioTextDataset):
             eos_id=eos_id,
             pad_id=pad_id,
             return_sample_id=return_sample_id,
+            return_language_id=return_language_id,
             channel_selector=channel_selector,
         )
 
@@ -624,6 +640,7 @@ class AudioToBPEDataset(_AudioTextDataset):
         use_start_end_token: Boolean which dictates whether to add [BOS] and [EOS]
             tokens to beginning and ending of speech respectively.
         return_sample_id (bool): whether to return the sample_id as a part of each sample
+        return_language_id (bool): whether to return the language_id as a part of each sample
         channel_selector (int | Iterable[int] | str): select a single channel or a subset of channels from multi-channel audio. If set to `'average'`, it performs averaging across channels. Disabled if set to `None`. Defaults to `None`. Uses zero-based indexing.
     """
 
@@ -637,6 +654,7 @@ class AudioToBPEDataset(_AudioTextDataset):
             'transcripts': NeuralType(('B', 'T'), LabelsType()),
             'transcript_length': NeuralType(tuple('B'), LengthsType()),
             'sample_id': NeuralType(tuple('B'), LengthsType(), optional=True),
+            'language_id': [NeuralType(('B'), StringType(), optional=True)],
         }
 
     def __init__(
@@ -652,6 +670,7 @@ class AudioToBPEDataset(_AudioTextDataset):
         trim: bool = False,
         use_start_end_token: bool = True,
         return_sample_id: bool = False,
+        return_language_id: bool = False,
         channel_selector: Optional[ChannelSelectorType] = None,
     ):
         if use_start_end_token and hasattr(tokenizer, "bos_id") and tokenizer.bos_id > 0:
@@ -671,7 +690,7 @@ class AudioToBPEDataset(_AudioTextDataset):
 
         class TokenizerWrapper:
             def __init__(self, tokenizer):
-                if isinstance(tokenizer, tokenizers.aggregate_tokenizer.AggregateTokenizer):
+                if isinstance(tokenizer, tokenizers.aggregate_tokenizer.AggregateTokenizer) or isinstance(tokenizer, tokenizers.multilingual_tokenizer.MultilingualTokenizer):
                     self.is_aggregate = True
                 else:
                     self.is_aggregate = False
@@ -701,6 +720,7 @@ class AudioToBPEDataset(_AudioTextDataset):
             pad_id=pad_id,
             trim=trim,
             return_sample_id=return_sample_id,
+            return_language_id=return_language_id,
             channel_selector=channel_selector,
         )
 

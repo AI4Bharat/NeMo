@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from tqdm import tqdm
 import collections
 import json
 import os
@@ -138,9 +139,9 @@ class AudioText(_Collection):
         if index_by_file_id:
             self.mapping = {}
 
-        for id_, audio_file, duration, offset, text, speaker, orig_sr, token_labels, lang in zip(
+        for id_, audio_file, duration, offset, text, speaker, orig_sr, token_labels, lang in tqdm(zip(
             ids, audio_files, durations, offsets, texts, speakers, orig_sampling_rates, token_labels, langs
-        ):
+        )):
             # Duration filters.
             if min_duration is not None and duration < min_duration:
                 duration_filtered += duration
@@ -217,7 +218,7 @@ class ASRAudioText(AudioText):
             [],
         )
         speakers, orig_srs, token_labels, langs = [], [], [], []
-        for item in manifest.item_iter(manifests_files):
+        for item in tqdm(manifest.item_iter(manifests_files)):
             ids.append(item['id'])
             audio_files.append(item['audio_file'])
             durations.append(item['duration'])

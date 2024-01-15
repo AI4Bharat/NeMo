@@ -138,8 +138,10 @@ class CTCBPEDecoding(AbstractCTCDecoding):
         tokenizer: NeMo tokenizer object, which inherits from TokenizerSpec.
     """
 
-    def __init__(self, decoding_cfg, tokenizer: TokenizerSpec):
-        blank_id = tokenizer.tokenizer.vocab_size
+    def __init__(self, decoding_cfg, tokenizer: TokenizerSpec, blank_id = None):
+        
+        if blank_id is None:
+            blank_id = tokenizer.tokenizer.vocab_size
         self.tokenizer = tokenizer
 
         super().__init__(decoding_cfg=decoding_cfg, blank_id=blank_id)
@@ -175,7 +177,7 @@ class CTCBPEDecoding(AbstractCTCDecoding):
             self.decode_tokens_to_str(hypothesis.text[0]).split(), hypothesis.token_confidence, hypothesis.text[0]
         )
 
-    def decode_tokens_to_str(self, tokens: List[int]) -> str:
+    def decode_tokens_to_str(self, tokens: List[int], lang: str = None) -> str:
         """
         Implemented by subclass in order to decoder a token list into a string.
 
@@ -185,7 +187,10 @@ class CTCBPEDecoding(AbstractCTCDecoding):
         Returns:
             A decoded string.
         """
-        hypothesis = self.tokenizer.ids_to_text(tokens)
+        if lang is not None:
+            hypothesis = self.tokenizer.ids_to_text(tokens, lang)
+        else:
+            hypothesis = self.tokenizer.ids_to_text(tokens)
         return hypothesis
 
     def decode_ids_to_tokens(self, tokens: List[int]) -> List[str]:
@@ -263,6 +268,7 @@ class WERBPE(Metric):
         predictions: torch.Tensor,
         targets: torch.Tensor,
         target_lengths: torch.Tensor,
+        lang_ids: List[str] = None,
         predictions_lengths: torch.Tensor = None,
     ):
         """
@@ -286,12 +292,20 @@ class WERBPE(Metric):
             for ind in range(targets_cpu_tensor.shape[0]):
                 tgt_len = tgt_lenths_cpu_tensor[ind].item()
                 target = targets_cpu_tensor[ind][:tgt_len].numpy().tolist()
-                reference = self.decoding.decode_tokens_to_str(target)
+                if lang_ids is not None:
+                    reference = self.decoding.decode_tokens_to_str(target, lang_ids[ind])
+                else:
+                    reference = self.decoding.decode_tokens_to_str(target)
                 references.append(reference)
 
-            hypotheses, _ = self.decoding.ctc_decoder_predictions_tensor(
-                predictions, predictions_lengths, fold_consecutive=self.fold_consecutive
-            )
+            if lang_ids is not None:
+                hypotheses, _ = self.decoding.ctc_decoder_predictions_tensor(
+                    predictions, predictions_lengths, fold_consecutive=self.fold_consecutive, lang_ids=lang_ids
+                )
+            else:
+                hypotheses, _ = self.decoding.ctc_decoder_predictions_tensor(
+                    predictions, predictions_lengths, fold_consecutive=self.fold_consecutive
+                )
 
         if self.log_prediction:
             logging.info(f"\n")

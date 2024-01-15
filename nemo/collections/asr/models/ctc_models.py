@@ -32,7 +32,7 @@ from nemo.collections.asr.parts.mixins import ASRModuleMixin, InterCTCMixin
 from nemo.collections.asr.parts.utils.audio_utils import ChannelSelectorType
 from nemo.core.classes.common import PretrainedModelInfo, typecheck
 from nemo.core.classes.mixins import AccessMixin
-from nemo.core.neural_types import AudioSignal, LabelsType, LengthsType, LogprobsType, NeuralType, SpectrogramType
+from nemo.core.neural_types import AudioSignal, LabelsType, LengthsType, LogprobsType, NeuralType, SpectrogramType, StringType
 from nemo.utils import logging
 
 __all__ = ['EncDecCTCModel']
@@ -69,7 +69,7 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, InterCTCMi
                 cfg.decoder["num_classes"] = len(self.cfg.decoder.vocabulary)
 
         self.decoder = EncDecCTCModel.from_config_dict(self._cfg.decoder)
-
+        
         self.loss = CTCLoss(
             num_classes=self.decoder.num_classes_with_blank - 1,
             zero_infinity=True,
@@ -99,6 +99,8 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, InterCTCMi
             dist_sync_on_step=True,
             log_prediction=self._cfg.get("log_prediction", False),
         )
+        
+        self.language_masks = None # Only supported for CTC_BPE models
 
         # Setup optional Optimization flags
         self.setup_optimization_flags()
@@ -281,7 +283,7 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, InterCTCMi
             decoding_cls = OmegaConf.structured(CTCDecodingConfig)
             decoding_cls = OmegaConf.create(OmegaConf.to_container(decoding_cls))
             decoding_cfg = OmegaConf.merge(decoding_cls, decoding_cfg)
-
+            
             self.decoding = CTCDecoding(
                 decoding_cfg=decoding_cfg, vocabulary=OmegaConf.to_container(self.decoder.vocabulary)
             )
@@ -349,6 +351,7 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, InterCTCMi
         # Automatically inject args from model config to dataloader config
         audio_to_text_dataset.inject_dataloader_value_from_model_config(self.cfg, config, key='sample_rate')
         audio_to_text_dataset.inject_dataloader_value_from_model_config(self.cfg, config, key='labels')
+        print("CONFIG:", config.return_language_id)
         dataset = audio_to_text_dataset.get_audio_to_text_char_dataset_from_config(
             config=config,
             local_rank=self.local_rank,
@@ -377,16 +380,26 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, InterCTCMi
             # support datasets that are lists of lists
             collate_fn = dataset.datasets[0].datasets[0].collate_fn
 
-        return torch.utils.data.DataLoader(
-            dataset=dataset,
-            batch_size=config['batch_size'],
-            collate_fn=collate_fn,
-            drop_last=config.get('drop_last', False),
-            shuffle=shuffle,
-            num_workers=config.get('num_workers', 0),
-            pin_memory=config.get('pin_memory', False),
-        )
-
+        if config.get('shuffle', False):
+            return torch.utils.data.DataLoader(
+                dataset=dataset,
+                batch_size=config['batch_size'],
+                collate_fn=collate_fn,
+                drop_last=config.get('drop_last', False),
+                shuffle=config['shuffle'],
+                num_workers=config.get('num_workers', 0),
+                pin_memory=config.get('pin_memory', False),
+            )
+        else:
+            return torch.utils.data.DataLoader(
+                dataset=dataset,
+                batch_size=config['batch_size'],
+                collate_fn=collate_fn,
+                drop_last=config.get('drop_last', False),
+                num_workers=config.get('num_workers', 0),
+                pin_memory=config.get('pin_memory', False),
+            )
+            
     def setup_training_data(self, train_data_config: Optional[Union[DictConfig, Dict]]):
         """
         Sets up the training data loader via a Dict-like object.
@@ -402,8 +415,8 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, InterCTCMi
             -   :class:`~nemo.collections.asr.data.audio_to_text.TarredAudioToBPEDataset`
             -   :class:`~nemo.collections.asr.data.audio_to_text_dali.AudioToCharDALIDataset`
         """
-        if 'shuffle' not in train_data_config:
-            train_data_config['shuffle'] = True
+        # if 'shuffle' not in train_data_config:
+        #     train_data_config['shuffle'] = True
 
         # preserve config
         self._update_dataset_config(dataset_name='train', config=train_data_config)
@@ -486,6 +499,7 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, InterCTCMi
             "processed_signal": NeuralType(('B', 'D', 'T'), SpectrogramType(), optional=True),
             "processed_signal_length": NeuralType(tuple('B'), LengthsType(), optional=True),
             "sample_id": NeuralType(tuple('B'), LengthsType(), optional=True),
+            'language_ids': [NeuralType(('B'), StringType(), optional=True)],
         }
 
     @property
@@ -498,7 +512,7 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, InterCTCMi
 
     @typecheck()
     def forward(
-        self, input_signal=None, input_signal_length=None, processed_signal=None, processed_signal_length=None
+        self, input_signal=None, input_signal_length=None, processed_signal=None, processed_signal_length=None, language_ids=None
     ):
         """
         Forward pass of the model.
@@ -539,7 +553,7 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, InterCTCMi
         encoder_output = self.encoder(audio_signal=processed_signal, length=processed_signal_length)
         encoded = encoder_output[0]
         encoded_len = encoder_output[1]
-        log_probs = self.decoder(encoder_output=encoded)
+        log_probs = self.decoder(encoder_output=encoded, language_ids=language_ids)
         greedy_predictions = log_probs.argmax(dim=-1, keepdim=False)
 
         return (
@@ -557,19 +571,26 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, InterCTCMi
         if self.is_interctc_enabled():
             AccessMixin.set_access_enabled(access_enabled=True)
 
-        signal, signal_len, transcript, transcript_len = batch
+        if "multisoftmax" not in self.cfg.decoder:
+            signal, signal_len, transcript, transcript_len = batch
+        else:
+            signal, signal_len, transcript, transcript_len, sample_ids, language_ids = batch    
+        
         if isinstance(batch, DALIOutputs) and batch.has_processed_signal:
             log_probs, encoded_len, predictions = self.forward(
                 processed_signal=signal, processed_signal_length=signal_len
             )
         else:
-            log_probs, encoded_len, predictions = self.forward(input_signal=signal, input_signal_length=signal_len)
+            if "multisoftmax" in self.cfg.decoder:
+                log_probs, encoded_len, predictions = self.forward(input_signal=signal, input_signal_length=signal_len, language_ids=language_ids)
+            else:
+                log_probs, encoded_len, predictions = self.forward(input_signal=signal, input_signal_length=signal_len)
 
         if hasattr(self, '_trainer') and self._trainer is not None:
             log_every_n_steps = self._trainer.log_every_n_steps
         else:
             log_every_n_steps = 1
-
+        
         loss_value = self.loss(
             log_probs=log_probs, targets=transcript, input_lengths=encoded_len, target_lengths=transcript_len
         )
@@ -594,12 +615,21 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, InterCTCMi
         )
 
         if (batch_nb + 1) % log_every_n_steps == 0:
-            self._wer.update(
-                predictions=log_probs,
-                targets=transcript,
-                target_lengths=transcript_len,
-                predictions_lengths=encoded_len,
-            )
+            if "multisoftmax" in self.cfg.decoder:
+                self._wer.update(
+                    predictions=log_probs,
+                    targets=transcript,
+                    target_lengths=transcript_len,
+                    predictions_lengths=encoded_len,
+                    lang_ids=language_ids,
+                )
+            else:
+                self._wer.update(
+                    predictions=log_probs,
+                    targets=transcript,
+                    target_lengths=transcript_len,
+                    predictions_lengths=encoded_len,
+                )
             wer, _, _ = self._wer.compute()
             self._wer.reset()
             tensorboard_logs.update({'training_batch_wer': wer})
@@ -607,17 +637,30 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, InterCTCMi
         return {'loss': loss_value, 'log': tensorboard_logs}
 
     def predict_step(self, batch, batch_idx, dataloader_idx=0):
-        signal, signal_len, transcript, transcript_len, sample_id = batch
+        if "multisoftmax" not in self.cfg.decoder:
+            signal, signal_len, transcript, transcript_len = batch
+        else:
+            signal, signal_len, transcript, transcript_len, sample_ids, language_ids = batch
+            
         if isinstance(batch, DALIOutputs) and batch.has_processed_signal:
             log_probs, encoded_len, predictions = self.forward(
                 processed_signal=signal, processed_signal_length=signal_len
             )
+            transcribed_texts, _ = self._wer.decoding.ctc_decoder_predictions_tensor(
+                decoder_outputs=log_probs, decoder_lengths=encoded_len, return_hypotheses=False,
+            )
         else:
-            log_probs, encoded_len, predictions = self.forward(input_signal=signal, input_signal_length=signal_len)
-
-        transcribed_texts, _ = self._wer.decoding.ctc_decoder_predictions_tensor(
-            decoder_outputs=log_probs, decoder_lengths=encoded_len, return_hypotheses=False,
-        )
+            if "multisoftmax" in self.cfg.decoder:
+                log_probs, encoded_len, predictions = self.forward(input_signal=signal, input_signal_length=signal_len, language_ids=language_ids)
+                transcribed_texts, _ = self._wer.decoding.ctc_decoder_predictions_tensor(
+                    decoder_outputs=log_probs, decoder_lengths=encoded_len, return_hypotheses=False, lang_ids=language_ids,
+                )
+            else:
+                log_probs, encoded_len, predictions = self.forward(input_signal=signal, input_signal_length=signal_len)
+                transcribed_texts, _ = self._wer.decoding.ctc_decoder_predictions_tensor(
+                    decoder_outputs=log_probs, decoder_lengths=encoded_len, return_hypotheses=False,
+                )
+        
 
         sample_id = sample_id.cpu().detach().numpy()
         return list(zip(sample_id, transcribed_texts))
@@ -626,13 +669,20 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, InterCTCMi
         if self.is_interctc_enabled():
             AccessMixin.set_access_enabled(access_enabled=True)
 
-        signal, signal_len, transcript, transcript_len = batch
+        if "multisoftmax" not in self.cfg.decoder:
+            signal, signal_len, transcript, transcript_len = batch
+        else:
+            signal, signal_len, transcript, transcript_len, sample_ids, language_ids = batch
+            
         if isinstance(batch, DALIOutputs) and batch.has_processed_signal:
             log_probs, encoded_len, predictions = self.forward(
                 processed_signal=signal, processed_signal_length=signal_len
             )
         else:
-            log_probs, encoded_len, predictions = self.forward(input_signal=signal, input_signal_length=signal_len)
+            if "multisoftmax" in self.cfg.decoder:
+                log_probs, encoded_len, predictions = self.forward(input_signal=signal, input_signal_length=signal_len, language_ids=language_ids)
+            else:
+                log_probs, encoded_len, predictions = self.forward(input_signal=signal, input_signal_length=signal_len)
 
         loss_value = self.loss(
             log_probs=log_probs, targets=transcript, input_lengths=encoded_len, target_lengths=transcript_len
@@ -640,10 +690,14 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, InterCTCMi
         loss_value, metrics = self.add_interctc_losses(
             loss_value, transcript, transcript_len, compute_wer=True, log_wer_num_denom=True, log_prefix="val_",
         )
-
-        self._wer.update(
-            predictions=log_probs, targets=transcript, target_lengths=transcript_len, predictions_lengths=encoded_len
-        )
+        if "multisoftmax" in self.cfg.decoder:        
+            self._wer.update(
+                predictions=log_probs, targets=transcript, target_lengths=transcript_len, predictions_lengths=encoded_len, lang_ids=language_ids,
+            )
+        else:
+            self._wer.update(
+                predictions=log_probs, targets=transcript, target_lengths=transcript_len, predictions_lengths=encoded_len,
+            )
         wer, wer_num, wer_denom = self._wer.compute()
         self._wer.reset()
         metrics.update({'val_loss': loss_value, 'val_wer_num': wer_num, 'val_wer_denom': wer_denom, 'val_wer': wer})

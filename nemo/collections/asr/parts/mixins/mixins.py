@@ -57,6 +57,8 @@ class ASRBPEMixin(ABC):
             raise ValueError("`tokenizer.type` cannot be None")
         elif tokenizer_type.lower() == 'agg':
             self._setup_aggregate_tokenizer(tokenizer_cfg)
+        elif tokenizer_type.lower() == 'multilingual':
+            self._setup_multilingual_tokenizer(tokenizer_cfg)
         else:
             self._setup_monolingual_tokenizer(tokenizer_cfg)
 
@@ -215,6 +217,49 @@ class ASRBPEMixin(ABC):
                     ][lang]['type']
 
         self.tokenizer = tokenizers.AggregateTokenizer(tokenizers_dict)
+    
+    def _setup_multilingual_tokenizer(self, tokenizer_cfg: DictConfig):
+        # Prevent tokenizer parallelism (unless user has explicitly set it)
+        if 'TOKENIZERS_PARALLELISM' not in os.environ:
+            os.environ['TOKENIZERS_PARALLELISM'] = 'false'
+
+        self.tokenizer_cfg = OmegaConf.to_container(tokenizer_cfg, resolve=True)  # type: dict
+
+        # the aggregate tokenizer does not have one tokenizer_dir but multiple ones
+        self.tokenizer_dir = None
+
+        self.tokenizer_cfg.pop('dir', None)  # Remove tokenizer directory, if any
+        # Remove tokenizer_type -- obviously if we are here, the type is 'agg'
+        self.tokenizer_type = self.tokenizer_cfg.pop('type').lower()
+
+        # the aggregate tokenizer should not have these
+        self.hf_tokenizer_kwargs = {}
+        self.tokenizer_cfg.pop("hf_kwargs", {})  # Remove HF tokenizer kwargs, if any
+
+        logging.info('_setup_tokenizer: detected an aggregate tokenizer')
+        # need to de-register any monolingual config items if they exist
+        self._cleanup_monolingual_and_aggregate_config_and_artifacts_if_needed()
+
+        # overwrite tokenizer type
+        if hasattr(self, 'cfg') and 'tokenizer' in self.cfg:
+            self.cfg.tokenizer.type = self.tokenizer_type
+
+        tokenizers_dict = {}
+        # init each of the monolingual tokenizers found in the config and assemble into  AggregateTokenizer
+        for lang, tokenizer_config in self.tokenizer_cfg[self.AGGREGATE_TOKENIZERS_DICT_PREFIX].items():
+            (tokenizer, model_path, vocab_path, spe_vocab_path,) = self._make_tokenizer(tokenizer_config, lang)
+
+            tokenizers_dict[lang] = tokenizer
+            if hasattr(self, 'cfg'):
+                with open_dict(self.cfg.tokenizer):
+                    self.cfg.tokenizer[self.AGGREGATE_TOKENIZERS_DICT_PREFIX][lang]['dir'] = self.tokenizer_cfg[
+                        self.AGGREGATE_TOKENIZERS_DICT_PREFIX
+                    ][lang]['dir']
+                    self.cfg.tokenizer[self.AGGREGATE_TOKENIZERS_DICT_PREFIX][lang]['type'] = self.tokenizer_cfg[
+                        self.AGGREGATE_TOKENIZERS_DICT_PREFIX
+                    ][lang]['type']
+
+        self.tokenizer = tokenizers.MultilingualTokenizer(tokenizers_dict)
 
     def _make_tokenizer(self, tokenizer_cfg: DictConfig, lang=None):
 

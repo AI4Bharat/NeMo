@@ -73,7 +73,7 @@ class EncDecHybridRNNTCTCBPEModel(EncDecHybridRNNTCTCModel, ASRBPEMixin):
             )
 
         with open_dict(cfg):
-            if self.tokenizer_type == "agg":
+            if self.tokenizer_type == "agg" or self.tokenizer_type == "multilingual":
                 cfg.aux_ctc.decoder.vocabulary = ListConfig(vocabulary)
             else:
                 cfg.aux_ctc.decoder.vocabulary = ListConfig(list(vocabulary.keys()))
@@ -92,6 +92,40 @@ class EncDecHybridRNNTCTCBPEModel(EncDecHybridRNNTCTCModel, ASRBPEMixin):
         self.decoding = RNNTBPEDecoding(
             decoding_cfg=self.cfg.decoding, decoder=self.decoder, joint=self.joint, tokenizer=self.tokenizer,
         )
+        
+        # Multisoftmax
+        self.language_masks = None
+        if (self.tokenizer_type == "agg" or self.tokenizer_type == "multilingual") and "multisoftmax" in cfg.decoder:
+            logging.info("Creating masks for multi-softmax layer.")
+            self.language_masks = {}
+            self.token_id_offsets = self.tokenizer.token_id_offset
+            self.offset_token_ids_by_token_id = self.tokenizer.offset_token_ids_by_token_id
+            for language in self.tokenizer.tokenizers_dict.keys():
+                self.language_masks[language] = [(token_language == language)  for _, token_language in self.tokenizer.langs_by_token_id.items()]
+                self.language_masks[language].append(True) # Insert blank token
+            self.ctc_loss = CTCLoss(
+                num_classes=self.ctc_decoder._num_classes // len(self.tokenizer.tokenizers_dict.keys()),
+                zero_infinity=True,
+                reduction=self.cfg.aux_ctc.get("ctc_reduction", "mean_batch"),
+            )
+            # Setup RNNT Loss
+            loss_name, loss_kwargs = self.extract_rnnt_loss_cfg(self.cfg.get("loss", None))
+            self.loss = RNNTLoss(
+                num_classes=self.ctc_decoder._num_classes // len(self.tokenizer.tokenizers_dict.keys()),
+                loss_name=loss_name,
+                loss_kwargs=loss_kwargs,
+                reduction=self.cfg.get("rnnt_reduction", "mean_batch"),
+            )
+            # Setup decoding object
+            self.decoding = RNNTBPEDecoding(
+                decoding_cfg=self.cfg.decoding, decoder=self.decoder, joint=self.joint, tokenizer=self.tokenizer, blank_id=self.ctc_decoder._num_classes // len(self.tokenizer.tokenizers_dict.keys())
+            )
+            
+            self.decoder.language_masks = self.language_masks
+            self.joint.language_masks = self.language_masks
+            self.joint.token_id_offsets = self.token_id_offsets
+            self.joint.offset_token_ids_by_token_id = self.offset_token_ids_by_token_id
+            self.ctc_decoder.language_masks = self.language_masks
 
         # Setup wer object
         self.wer = RNNTBPEWER(
@@ -113,8 +147,11 @@ class EncDecHybridRNNTCTCBPEModel(EncDecHybridRNNTCTCModel, ASRBPEMixin):
             ctc_decoding_cfg = OmegaConf.structured(CTCBPEDecodingConfig)
             with open_dict(self.cfg.aux_ctc):
                 self.cfg.aux_ctc.decoding = ctc_decoding_cfg
-        self.ctc_decoding = CTCBPEDecoding(self.cfg.aux_ctc.decoding, tokenizer=self.tokenizer)
-
+        if (self.tokenizer_type == "agg" or self.tokenizer_type == "multilingual") and "multisoftmax" in cfg.decoder:
+            self.ctc_decoding = CTCBPEDecoding(self.cfg.aux_ctc.decoding, tokenizer=self.tokenizer, blank_id=self.ctc_decoder._num_classes//len(self.tokenizer.tokenizers_dict.keys()))
+        else:
+            self.ctc_decoding = CTCBPEDecoding(self.cfg.aux_ctc.decoding, tokenizer=self.tokenizer)
+            
         # Setup CTC WER
         self.ctc_wer = WERBPE(
             decoding=self.ctc_decoding,
@@ -124,7 +161,8 @@ class EncDecHybridRNNTCTCBPEModel(EncDecHybridRNNTCTCModel, ASRBPEMixin):
         )
 
         # setting the RNNT decoder as the default one
-        self.cur_decoder = "rnnt"
+        # self.cur_decoder = "rnnt"
+        self.cur_decoder = "ctc"
 
     def _setup_dataloader_from_config(self, config: Optional[Dict]):
         dataset = audio_to_text_dataset.get_audio_to_text_bpe_dataset_from_config(
@@ -143,7 +181,7 @@ class EncDecHybridRNNTCTCBPEModel(EncDecHybridRNNTCTCModel, ASRBPEMixin):
             # DALI Dataset implements dataloader interface
             return dataset
 
-        shuffle = config['shuffle']
+        # shuffle = config['shuffle']
         if config.get('is_tarred', False):
             shuffle = False
 
@@ -156,15 +194,25 @@ class EncDecHybridRNNTCTCBPEModel(EncDecHybridRNNTCTCModel, ASRBPEMixin):
             # support datasets that are lists of lists
             collate_fn = dataset.datasets[0].datasets[0].collate_fn
 
-        return torch.utils.data.DataLoader(
-            dataset=dataset,
-            batch_size=config['batch_size'],
-            collate_fn=collate_fn,
-            drop_last=config.get('drop_last', False),
-            shuffle=shuffle,
-            num_workers=config.get('num_workers', 0),
-            pin_memory=config.get('pin_memory', False),
-        )
+        if config.get('shuffle', False):
+            return torch.utils.data.DataLoader(
+                dataset=dataset,
+                batch_size=config['batch_size'],
+                collate_fn=collate_fn,
+                drop_last=config.get('drop_last', False),
+                shuffle=config['shuffle'],
+                num_workers=config.get('num_workers', 0),
+                pin_memory=config.get('pin_memory', False),
+            )
+        else:
+            return torch.utils.data.DataLoader(
+                dataset=dataset,
+                batch_size=config['batch_size'],
+                collate_fn=collate_fn,
+                drop_last=config.get('drop_last', False),
+                num_workers=config.get('num_workers', 0),
+                pin_memory=config.get('pin_memory', False),
+            )
 
     def _setup_transcribe_dataloader(self, config: Dict) -> 'torch.utils.data.DataLoader':
         """

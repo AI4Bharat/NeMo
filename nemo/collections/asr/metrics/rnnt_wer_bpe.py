@@ -195,8 +195,9 @@ class RNNTBPEDecoding(AbstractRNNTDecoding):
         tokenizer: The tokenizer which will be used for decoding.
     """
 
-    def __init__(self, decoding_cfg, decoder, joint, tokenizer: TokenizerSpec):
-        blank_id = tokenizer.tokenizer.vocab_size
+    def __init__(self, decoding_cfg, decoder, joint, tokenizer: TokenizerSpec, blank_id=None):
+        if blank_id is None:
+            blank_id = tokenizer.tokenizer.vocab_size
         self.tokenizer = tokenizer
 
         super(RNNTBPEDecoding, self).__init__(
@@ -222,7 +223,7 @@ class RNNTBPEDecoding(AbstractRNNTDecoding):
             hypothesis.words, hypothesis.token_confidence, hypothesis.y_sequence
         )
 
-    def decode_tokens_to_str(self, tokens: List[int]) -> str:
+    def decode_tokens_to_str(self, tokens: List[int], lang: str = None) -> str:
         """
         Implemented by subclass in order to decoder a token list into a string.
 
@@ -232,7 +233,10 @@ class RNNTBPEDecoding(AbstractRNNTDecoding):
         Returns:
             A decoded string.
         """
-        hypothesis = self.tokenizer.ids_to_text(tokens)
+        if lang is not None:
+            hypothesis = self.tokenizer.ids_to_text(tokens, lang)
+        else:
+            hypothesis = self.tokenizer.ids_to_text(tokens)
         return hypothesis
 
     def decode_ids_to_tokens(self, tokens: List[int]) -> List[str]:
@@ -275,7 +279,7 @@ class RNNTBPEDecoding(AbstractRNNTDecoding):
         lang_list = self.tokenizer.ids_to_text_and_langs(tokens)
         return lang_list
 
-    def decode_hypothesis(self, hypotheses_list: List[Hypothesis]) -> List[Union[Hypothesis, NBestHypotheses]]:
+    def decode_hypothesis(self, hypotheses_list: List[Hypothesis], lang_ids: List[str] = None) -> List[Union[Hypothesis, NBestHypotheses]]:
         """
         Decode a list of hypotheses into a list of strings.
         Overrides the super() method optionally adding lang information
@@ -286,7 +290,7 @@ class RNNTBPEDecoding(AbstractRNNTDecoding):
         Returns:
             A list of strings.
         """
-        hypotheses = super().decode_hypothesis(hypotheses_list)
+        hypotheses = super().decode_hypothesis(hypotheses_list, lang_ids)
         if self.compute_langs:
             if isinstance(self.tokenizer, AggregateTokenizer):
                 for ind in range(len(hypotheses_list)):
@@ -371,6 +375,7 @@ class RNNTBPEWER(Metric):
         encoded_lengths: torch.Tensor,
         targets: torch.Tensor,
         target_lengths: torch.Tensor,
+        lang_ids: List[str] = None,
     ) -> torch.Tensor:
         words = 0
         scores = 0
@@ -385,10 +390,13 @@ class RNNTBPEWER(Metric):
             for ind in range(targets_cpu_tensor.shape[0]):
                 tgt_len = tgt_lenths_cpu_tensor[ind].item()
                 target = targets_cpu_tensor[ind][:tgt_len].numpy().tolist()
-                reference = self.decoding.decode_tokens_to_str(target)
+                if lang_ids is not None:
+                    reference = self.decoding.decode_tokens_to_str(target, lang_ids[ind])
+                else:
+                    reference = self.decoding.decode_tokens_to_str(target)
                 references.append(reference)
 
-            hypotheses, _ = self.decoding.rnnt_decoder_predictions_tensor(encoder_output, encoded_lengths)
+            hypotheses, _ = self.decoding.rnnt_decoder_predictions_tensor(encoder_output, encoded_lengths, lang_ids=lang_ids)
 
         if self.log_prediction:
             logging.info(f"\n")

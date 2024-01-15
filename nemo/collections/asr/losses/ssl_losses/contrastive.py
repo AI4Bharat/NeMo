@@ -201,8 +201,17 @@ class ContrastiveLoss(Loss):
                     targets.transpose(0, 1), targets_masked_only.size(0),  # TxBxC  # T'
                 )
             else:
-                # only sample from masked steps in utterance
                 negatives, _ = self.sample_negatives(targets_masked_only, targets_masked_only.size(0))  # T'xBxC  # T'
+                # if targets_masked_only.size(0) >= self.num_negatives:
+                #     # only sample from masked steps in utterance
+                #     negatives, _ = self.sample_negatives(targets_masked_only, targets_masked_only.size(0))  # T'xBxC  # T'
+                # else: # for shorter samples (<8s)
+                #     # print(f"sampling from non-masked ({self.num_negatives},{targets_masked_only.size(0)})")
+                #     # sample from all steps in utterance
+                #     negatives, _ = self.sample_negatives(
+                #         targets.transpose(0, 1), targets_masked_only.size(0),  # TxBxC  # T'
+                #     )
+                    
             # NxT'xBxC
 
             out_masked_only = out_masked_only.reshape(-1, out_masked_only.shape[-1])

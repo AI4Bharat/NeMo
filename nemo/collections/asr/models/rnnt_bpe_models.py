@@ -479,7 +479,7 @@ class EncDecRNNTBPEModel(EncDecRNNTModel, ASRBPEMixin):
             # DALI Dataset implements dataloader interface
             return dataset
 
-        shuffle = config['shuffle']
+        # shuffle = config['shuffle']
         if config.get('is_tarred', False):
             shuffle = False
 
@@ -492,15 +492,25 @@ class EncDecRNNTBPEModel(EncDecRNNTModel, ASRBPEMixin):
             # support datasets that are lists of lists
             collate_fn = dataset.datasets[0].datasets[0].collate_fn
 
-        return torch.utils.data.DataLoader(
-            dataset=dataset,
-            batch_size=config['batch_size'],
-            collate_fn=collate_fn,
-            drop_last=config.get('drop_last', False),
-            shuffle=shuffle,
-            num_workers=config.get('num_workers', 0),
-            pin_memory=config.get('pin_memory', False),
-        )
+        if config.get('shuffle', False):
+            return torch.utils.data.DataLoader(
+                dataset=dataset,
+                batch_size=config['batch_size'],
+                collate_fn=collate_fn,
+                drop_last=config.get('drop_last', False),
+                shuffle=config['shuffle'],
+                num_workers=config.get('num_workers', 0),
+                pin_memory=config.get('pin_memory', False),
+            )
+        else:
+            return torch.utils.data.DataLoader(
+                dataset=dataset,
+                batch_size=config['batch_size'],
+                collate_fn=collate_fn,
+                drop_last=config.get('drop_last', False),
+                num_workers=config.get('num_workers', 0),
+                pin_memory=config.get('pin_memory', False),
+            )
 
     def _setup_transcribe_dataloader(self, config: Dict) -> 'torch.utils.data.DataLoader':
         """
