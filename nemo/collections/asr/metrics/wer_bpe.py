@@ -138,7 +138,7 @@ class CTCBPEDecoding(AbstractCTCDecoding):
         tokenizer: NeMo tokenizer object, which inherits from TokenizerSpec.
     """
 
-    def __init__(self, decoding_cfg, tokenizer: TokenizerSpec, blank_id = None):
+    def __init__(self, decoding_cfg, tokenizer: TokenizerSpec, blank_id = None,lang=None):
         
         if blank_id is None:
             blank_id = tokenizer.tokenizer.vocab_size
@@ -149,13 +149,21 @@ class CTCBPEDecoding(AbstractCTCDecoding):
         # Finalize Beam Search Decoding framework
         if isinstance(self.decoding, ctc_beam_decoding.AbstractBeamCTCInfer):
             if hasattr(self.tokenizer.tokenizer, 'get_vocab'):
-                vocab_dict = self.tokenizer.tokenizer.get_vocab()
-                if isinstance(self.tokenizer.tokenizer, DummyTokenizer):  # AggregateTokenizer.DummyTokenizer
+                if lang is None:
+                    vocab_dict = self.tokenizer.tokenizer.get_vocab()
+                else:
+                    vocab_dict = self.tokenizer.tokenizers_dict['hi'].tokenizer.get_vocab()
+                print(vocab_dict)
+                # breakpoint()
+                if isinstance(self.tokenizer.tokenizer, DummyTokenizer): # or decoding_cfg.tokenizer_type == "multilingual":  # AggregateTokenizer.DummyTokenizer
                     vocab = vocab_dict
                 else:
                     vocab = list(vocab_dict.keys())
                 self.decoding.set_vocabulary(vocab)
-                self.decoding.set_tokenizer(tokenizer)
+                if lang is not None:
+                    self.decoding.set_tokenizer(self.tokenizer.tokenizers_dict['hi'])
+                else:
+                    self.decoding.set_tokenizer(self.tokenizer)
             else:
                 logging.warning("Could not resolve the vocabulary of the tokenizer !")
 

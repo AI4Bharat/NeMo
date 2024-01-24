@@ -50,6 +50,40 @@ from nemo.utils.loggers import ClearMLLogger, ClearMLParams, DLLogger, DLLoggerP
 from nemo.utils.model_utils import uninject_model_parallel_rank
 
 
+class MinStepsCallback(EarlyStopping):
+    def __init__(self, monitor: str = 'val_loss', min_delta: float = 0.0, patience: int = 3,
+                 verbose: bool = False, mode: str = 'auto', strict: bool = True,
+                 min_steps: int = 5000, check_finite: bool = True, stopping_threshold: Optional[float] = None,
+                 divergence_threshold: Optional[float] = None,check_on_train_epoch_end: Optional[bool] = None,
+                 log_rank_zero_only: bool = False
+                 ):
+        self.min_steps = min_steps
+        super().__init__(monitor=monitor, min_delta=min_delta, patience=patience,
+                 verbose=verbose, mode=mode, strict=strict, check_finite=check_finite, 
+                 stopping_threshold=stopping_threshold,divergence_threshold=divergence_threshold,
+                 check_on_train_epoch_end=check_on_train_epoch_end,log_rank_zero_only=log_rank_zero_only)
+    
+    def _run_early_stopping_check(self, trainer: pytorch_lightning.Trainer) -> None:
+        if trainer.global_step > self.min_steps:
+            return super()._run_early_stopping_check(trainer)
+        else:
+            return False, f"Yet to reach the minimum steps {trainer.global_step}"
+    
+@dataclass
+class MinStepsCallbackParams:
+    monitor: str = "val_loss"  # The metric that early stopping should consider.
+    mode: str = "min"  # inform early stopping whether to look for increase or decrease in monitor.
+    min_delta: float = 0.001  # smallest change to consider as improvement.
+    patience: int = 10  # how many (continuous) validation cycles to wait with no improvement and stopping training.
+    verbose: bool = True
+    strict: bool = True
+    check_finite: bool = True
+    stopping_threshold: Optional[float] = None
+    divergence_threshold: Optional[float] = None
+    check_on_train_epoch_end: Optional[bool] = None
+    log_rank_zero_only: bool = False
+    min_steps: int = 5000
+
 class NotFoundError(NeMoBaseException):
     """ Raised when a file or folder is not found"""
 
@@ -170,6 +204,8 @@ class ExpManagerConfig:
     ema: Optional[EMAParams] = EMAParams()
     # Wall clock time limit
     max_time_per_run: Optional[str] = None
+    early_stopping_with_min_steps: Optional[bool] = False
+    early_stopping_with_min_steps_params: Optional[MinStepsCallbackParams] = MinStepsCallbackParams()
 
 
 class TimingCallback(Callback):
@@ -436,10 +472,13 @@ def exp_manager(trainer: 'pytorch_lightning.Trainer', cfg: Optional[Union[DictCo
             every_n_steps=cfg.ema.every_n_steps,
         )
         trainer.callbacks.append(ema_callback)
+    if cfg.early_stopping_with_min_steps:
+        min_steps_cb = MinStepsCallback(**cfg.early_stopping_with_min_steps_params)
+        trainer.callbacks.append(min_steps_cb)
 
-    if cfg.create_early_stopping_callback:
-        early_stop_callback = EarlyStopping(**cfg.early_stopping_callback_params)
-        trainer.callbacks.append(early_stop_callback)
+    # if cfg.create_early_stopping_callback:
+    #     early_stop_callback = EarlyStopping(**cfg.early_stopping_callback_params)
+    #     trainer.callbacks.append(early_stop_callback)
 
     if cfg.create_checkpoint_callback:
         configure_checkpointing(

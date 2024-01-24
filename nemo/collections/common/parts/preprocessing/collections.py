@@ -161,6 +161,7 @@ class AudioText(_Collection):
                         if lang is not None:
                             text_tokens = parser(text, lang)
                         else:
+                            print(audio_file)
                             raise ValueError("lang required in manifest when using aggregate tokenizers")
                     else:
                         text_tokens = parser(text)

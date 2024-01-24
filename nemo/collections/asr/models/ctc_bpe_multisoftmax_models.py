@@ -50,6 +50,8 @@ class EncDecCTCMultiSoftmaxModelBPE(EncDecCTCModel, ASRBPEMixin):
 
         # Initialize a dummy vocabulary
         vocabulary = self.tokenizer.tokenizer.get_vocab()
+        print(vocabulary)
+        breakpoint()
 
         # Set the new vocabulary
         with open_dict(cfg):

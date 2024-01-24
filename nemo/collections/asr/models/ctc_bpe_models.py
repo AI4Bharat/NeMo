@@ -91,7 +91,12 @@ class EncDecCTCModelBPE(EncDecCTCModel, ASRBPEMixin):
             with open_dict(self.cfg):
                 self.cfg.decoding = decoding_cfg
         if (self.tokenizer_type == "agg" or self.tokenizer_type == "multilingual") and "multisoftmax" in cfg.decoder:
-            self.decoding = CTCBPEDecoding(self.cfg.decoding, tokenizer=self.tokenizer, blank_id=self.decoder._num_classes//len(self.tokenizer.tokenizers_dict.keys()))
+            if decoding_cfg.strategy == 'pyctcdecode':
+                # create separate decoders for each language
+                # self.decoding = [CTCBPEDecoding(self.cfg.decoding, tokenizer=self.tokenizer, blank_id=self.decoder._num_classes//len(self.tokenizer.tokenizers_dict.keys()),lang=l) for l in self.tokenizer.tokenizers_dict.keys()]
+                self.decoding = CTCBPEDecoding(self.cfg.decoding, tokenizer=self.tokenizer, blank_id=self.decoder._num_classes//len(self.tokenizer.tokenizers_dict.keys()),lang='any')
+            else:
+                self.decoding = CTCBPEDecoding(self.cfg.decoding, tokenizer=self.tokenizer, blank_id=self.decoder._num_classes//len(self.tokenizer.tokenizers_dict.keys()))
         else:
             self.decoding = CTCBPEDecoding(self.cfg.decoding, tokenizer=self.tokenizer)
         
@@ -140,7 +145,7 @@ class EncDecCTCModelBPE(EncDecCTCModel, ASRBPEMixin):
                 drop_last=config.get('drop_last', False),
                 shuffle=config['shuffle'],
                 num_workers=config.get('num_workers', 0),
-                pin_memory=config.get('pin_memory', False),
+                pin_memory=config.get('pin_memory', False)
             )
         else:
             return torch.utils.data.DataLoader(
@@ -149,7 +154,7 @@ class EncDecCTCModelBPE(EncDecCTCModel, ASRBPEMixin):
                 collate_fn=collate_fn,
                 drop_last=config.get('drop_last', False),
                 num_workers=config.get('num_workers', 0),
-                pin_memory=config.get('pin_memory', False),
+                pin_memory=config.get('pin_memory', False)
             )
 
     def _setup_transcribe_dataloader(self, config: Dict) -> 'torch.utils.data.DataLoader':
