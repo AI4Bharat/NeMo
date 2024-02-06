@@ -104,6 +104,7 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin):
         augmentor: DictConfig = None,
         verbose: bool = True,
         logprobs: bool = False,
+        language_id: str = None,
     ) -> (List[str], Optional[List['Hypothesis']]):
         """
         Uses greedy decoding to transcribe audio files. Use this method for debugging and prototyping.
@@ -133,6 +134,7 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin):
                 f"{self.cur_decoder} is not supported for cur_decoder. Supported values are ['ctc', 'rnnt']"
             )
         if self.cur_decoder == "rnnt":
+            logging.info("Running with RNN-T decoder..")
             return super().transcribe(
                 paths2audio_files=paths2audio_files,
                 batch_size=batch_size,
@@ -142,7 +144,10 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin):
                 channel_selector=channel_selector,
                 augmentor=augmentor,
                 verbose=verbose,
+                language_id = language_id
             )
+        
+        logging.info("Running with CTC decoder..")
 
         if paths2audio_files is None or len(paths2audio_files) == 0:
             return {}
@@ -194,13 +199,18 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin):
                 temporary_datalayer = self._setup_transcribe_dataloader(config)
                 logits_list = []
                 for test_batch in tqdm(temporary_datalayer, desc="Transcribing", disable=not verbose):
+                    signal, signal_len, _, _ = test_batch
+                    if "multisoftmax" not in self.cfg.decoder:
+                        language_ids = None
+                    else:
+                        language_ids = [language_id] * len(signal)
                     encoded, encoded_len = self.forward(
-                        input_signal=test_batch[0].to(device), input_signal_length=test_batch[1].to(device)
+                        input_signal=signal.to(device), input_signal_length=signal_len.to(device)
                     )
 
-                    logits = self.ctc_decoder(encoder_output=encoded)
+                    logits = self.ctc_decoder(encoder_output=encoded, language_ids=language_ids)
                     best_hyp, all_hyp = self.ctc_decoding.ctc_decoder_predictions_tensor(
-                        logits, encoded_len, return_hypotheses=return_hypotheses,
+                        logits, encoded_len, return_hypotheses=return_hypotheses, lang_ids=language_ids,
                     )
                     logits = logits.cpu()
 

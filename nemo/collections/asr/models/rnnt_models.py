@@ -218,6 +218,7 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, Exportable):
         channel_selector: Optional[ChannelSelectorType] = None,
         augmentor: DictConfig = None,
         verbose: bool = True,
+        language_id: str = None,
     ) -> Tuple[List[str], Optional[List['Hypothesis']]]:
         """
         Uses greedy decoding to transcribe audio files. Use this method for debugging and prototyping.
@@ -286,15 +287,21 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, Exportable):
                     config['augmentor'] = augmentor
 
                 temporary_datalayer = self._setup_transcribe_dataloader(config)
-                for test_batch in tqdm(temporary_datalayer, desc="Transcribing", disable=(not verbose)):
+                for test_batch in tqdm(temporary_datalayer, desc="Transcribing", disable=not verbose):
+                    signal, signal_len, _, _ = test_batch
+                    if "multisoftmax" not in self.cfg.decoder:
+                        language_ids = None
+                    else:
+                        language_ids = [language_id] * len(signal)
                     encoded, encoded_len = self.forward(
-                        input_signal=test_batch[0].to(device), input_signal_length=test_batch[1].to(device)
+                        input_signal=signal.to(device), input_signal_length=signal_len.to(device)
                     )
                     best_hyp, all_hyp = self.decoding.rnnt_decoder_predictions_tensor(
                         encoded,
                         encoded_len,
                         return_hypotheses=return_hypotheses,
                         partial_hypotheses=partial_hypothesis,
+                        lang_ids=language_ids,
                     )
 
                     hypotheses += best_hyp
