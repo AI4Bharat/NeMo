@@ -324,8 +324,16 @@ class EncDecCTCModelBPE(EncDecCTCModel, ASRBPEMixin):
         decoding_cls = OmegaConf.structured(CTCBPEDecodingConfig)
         decoding_cls = OmegaConf.create(OmegaConf.to_container(decoding_cls))
         decoding_cfg = OmegaConf.merge(decoding_cls, decoding_cfg)
-
-        self.decoding = CTCBPEDecoding(decoding_cfg=decoding_cfg, tokenizer=self.tokenizer,)
+        
+        if (self.tokenizer_type == "agg" or self.tokenizer_type == "multilingual") and "multisoftmax" in self.cfg.decoder:
+            if decoding_cfg.strategy == 'pyctcdecode':
+                # create separate decoders for each language
+                # self.decoding = [CTCBPEDecoding(self.cfg.decoding, tokenizer=self.tokenizer, blank_id=self.decoder._num_classes//len(self.tokenizer.tokenizers_dict.keys()),lang=l) for l in self.tokenizer.tokenizers_dict.keys()]
+                self.decoding = CTCBPEDecoding(self.cfg.decoding, tokenizer=self.tokenizer, blank_id=self.decoder._num_classes//len(self.tokenizer.tokenizers_dict.keys()),lang='any')
+            else:
+                self.decoding = CTCBPEDecoding(self.cfg.decoding, tokenizer=self.tokenizer, blank_id=self.decoder._num_classes//len(self.tokenizer.tokenizers_dict.keys()))
+        else:
+            self.decoding = CTCBPEDecoding(self.cfg.decoding, tokenizer=self.tokenizer)
 
         self._wer = WERBPE(
             decoding=self.decoding,

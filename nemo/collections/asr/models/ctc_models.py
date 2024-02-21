@@ -122,6 +122,7 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, InterCTCMi
         channel_selector: Optional[ChannelSelectorType] = None,
         augmentor: DictConfig = None,
         verbose: bool = True,
+        language_id: str = None
     ) -> List[str]:
         """
         If modify this function, please remember update transcribe_partial_audio() in
@@ -197,8 +198,12 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, InterCTCMi
 
                 temporary_datalayer = self._setup_transcribe_dataloader(config)
                 for test_batch in tqdm(temporary_datalayer, desc="Transcribing", disable=not verbose):
+                    if "multisoftmax" not in self.cfg.decoder:
+                        language_ids = None
+                    else:
+                        language_ids = [language_id] * len(test_batch[0])
                     logits, logits_len, greedy_predictions = self.forward(
-                        input_signal=test_batch[0].to(device), input_signal_length=test_batch[1].to(device)
+                        input_signal=test_batch[0].to(device), input_signal_length=test_batch[1].to(device),language_ids=language_ids
                     )
 
                     if logprobs:
@@ -208,7 +213,7 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, InterCTCMi
                             hypotheses.append(lg.cpu().numpy())
                     else:
                         current_hypotheses, all_hyp = self.decoding.ctc_decoder_predictions_tensor(
-                            logits, decoder_lengths=logits_len, return_hypotheses=return_hypotheses,
+                            logits, decoder_lengths=logits_len, return_hypotheses=return_hypotheses, lang_ids=language_ids
                         )
                         logits = logits.cpu()
 
