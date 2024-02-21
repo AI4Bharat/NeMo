@@ -148,7 +148,6 @@ class EncDecHybridRNNTCTCBPEModel(EncDecHybridRNNTCTCModel, ASRBPEMixin):
             with open_dict(self.cfg.aux_ctc):
                 self.cfg.aux_ctc.decoding = ctc_decoding_cfg
         if (self.tokenizer_type == "agg" or self.tokenizer_type == "multilingual") and "multisoftmax" in cfg.decoder:
-            breakpoint()
             if ctc_decoding_cfg.strategy == 'pyctcdecode':
                 self.decoding = CTCBPEDecoding(self.cfg.decoding, tokenizer=self.tokenizer, blank_id=(self.ctc_decoder._num_classes-1)//len(self.tokenizer.tokenizers_dict.keys()),lang='any')
             else:
