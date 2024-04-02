@@ -47,6 +47,7 @@ from nemo.core.neural_types import (
     LogprobsType,
     NeuralType,
     SpectrogramType,
+    StringType
 )
 from nemo.utils import logging
 
@@ -409,13 +410,16 @@ class ConvASRDecoder(NeuralModule, Exportable, adapter_mixins.AdapterModuleMixin
 
     @property
     def input_types(self):
-        return OrderedDict({"encoder_output": NeuralType(('B', 'D', 'T'), AcousticEncodedRepresentation())})
+        return OrderedDict({
+            "encoder_output": NeuralType(('B', 'D', 'T'), AcousticEncodedRepresentation()),
+            'language_ids': [NeuralType(('B'), StringType(), optional=True)], # CTEMO
+        })
 
     @property
     def output_types(self):
         return OrderedDict({"logprobs": NeuralType(('B', 'T', 'D'), LogprobsType())})
 
-    def __init__(self, feat_in, num_classes, init_mode="xavier_uniform", vocabulary=None):
+    def __init__(self, feat_in, num_classes, init_mode="xavier_uniform", vocabulary=None, multisoftmax=False, language_masks=None): #CTEMO
         super().__init__()
 
         if vocabulary is None and num_classes < 0:
@@ -447,9 +451,10 @@ class ConvASRDecoder(NeuralModule, Exportable, adapter_mixins.AdapterModuleMixin
 
         # to change, requires running ``model.temperature = T`` explicitly
         self.temperature = 1.0
-
+        self.multisoftmax = multisoftmax
+        self.language_masks = language_masks
     @typecheck()
-    def forward(self, encoder_output):
+    def forward(self, encoder_output, language_ids=None): #CTEMO
         # Adapter module forward step
         if self.is_adapter_available():
             encoder_output = encoder_output.transpose(1, 2)  # [B, T, C]
@@ -457,10 +462,28 @@ class ConvASRDecoder(NeuralModule, Exportable, adapter_mixins.AdapterModuleMixin
             encoder_output = encoder_output.transpose(1, 2)  # [B, C, T]
 
         if self.temperature != 1.0:
-            return torch.nn.functional.log_softmax(
-                self.decoder_layers(encoder_output).transpose(1, 2) / self.temperature, dim=-1
-            )
-        return torch.nn.functional.log_softmax(self.decoder_layers(encoder_output).transpose(1, 2), dim=-1)
+            decoder_output = self.decoder_layers(encoder_output).transpose(1, 2) / self.temperature
+        else:
+            decoder_output = self.decoder_layers(encoder_output).transpose(1, 2)
+        
+        if language_ids is not None:
+            sample_mask = []
+            for lang_idx in language_ids:
+                sample_mask.append(self.language_masks[lang_idx])
+            sample_mask = torch.tensor(sample_mask, dtype=torch.bool) # .to(decoder_output.device)
+            # Repeat across timesteps [B, T, C]
+            sample_mask = sample_mask.unsqueeze(1)
+            mask = sample_mask.repeat(1, decoder_output.shape[1], 1)
+            # Send mask to GPU
+            mask = mask.to(decoder_output.device)
+            # masked_output = self.masked_softmax(decoder_output, mask) # B x T x 3073 -> B x T x 257
+            decoder_output = torch.masked_select(decoder_output, mask).view(decoder_output.shape[0],decoder_output.shape[1],-1)
+        
+        del mask
+        # print(mask[0][0])
+        # softmax_output = self.masked_softmax(decoder_output, mask)
+        # return softmax_output
+        return torch.nn.functional.log_softmax(decoder_output, dim=-1)
 
     def input_example(self, max_batch=1, max_dim=256):
         """

@@ -76,7 +76,7 @@ class EncDecHybridRNNTCTCBPEModel(EncDecHybridRNNTCTCModel, ASRBPEMixin):
             )
 
         with open_dict(cfg):
-            if self.tokenizer_type == "agg":
+            if self.tokenizer_type == "agg" or self.tokenizer_type == "multilingual": #CTEMO
                 cfg.aux_ctc.decoder.vocabulary = ListConfig(vocabulary)
             else:
                 cfg.aux_ctc.decoder.vocabulary = ListConfig(list(vocabulary.keys()))
@@ -96,6 +96,40 @@ class EncDecHybridRNNTCTCBPEModel(EncDecHybridRNNTCTCModel, ASRBPEMixin):
         self.decoding = RNNTBPEDecoding(
             decoding_cfg=self.cfg.decoding, decoder=self.decoder, joint=self.joint, tokenizer=self.tokenizer,
         )
+
+        # Multisoftmax #CTEMO
+        self.language_masks = None
+        if (self.tokenizer_type == "agg" or self.tokenizer_type == "multilingual") and "multisoftmax" in cfg.decoder:
+            logging.info("Creating masks for multi-softmax layer.")
+            self.language_masks = {}
+            self.token_id_offsets = self.tokenizer.token_id_offset
+            self.offset_token_ids_by_token_id = self.tokenizer.offset_token_ids_by_token_id
+            for language in self.tokenizer.tokenizers_dict.keys():
+                self.language_masks[language] = [(token_language == language)  for _, token_language in self.tokenizer.langs_by_token_id.items()]
+                self.language_masks[language].append(True) # Insert blank token
+            self.ctc_loss = CTCLoss(
+                num_classes=self.ctc_decoder._num_classes // len(self.tokenizer.tokenizers_dict.keys()),
+                zero_infinity=True,
+                reduction=self.cfg.aux_ctc.get("ctc_reduction", "mean_batch"),
+            )
+            # Setup RNNT Loss
+            loss_name, loss_kwargs = self.extract_rnnt_loss_cfg(self.cfg.get("loss", None))
+            self.loss = RNNTLoss(
+                num_classes=self.ctc_decoder._num_classes // len(self.tokenizer.tokenizers_dict.keys()),
+                loss_name=loss_name,
+                loss_kwargs=loss_kwargs,
+                reduction=self.cfg.get("rnnt_reduction", "mean_batch"),
+            )
+            # Setup decoding object
+            self.decoding = RNNTBPEDecoding(
+                decoding_cfg=self.cfg.decoding, decoder=self.decoder, joint=self.joint, tokenizer=self.tokenizer, blank_id=self.ctc_decoder._num_classes // len(self.tokenizer.tokenizers_dict.keys())
+            )
+            
+            self.decoder.language_masks = self.language_masks
+            self.joint.language_masks = self.language_masks
+            self.joint.token_id_offsets = self.token_id_offsets
+            self.joint.offset_token_ids_by_token_id = self.offset_token_ids_by_token_id
+            self.ctc_decoder.language_masks = self.language_masks
 
         # Setup wer object
         self.wer = WER(
@@ -117,7 +151,10 @@ class EncDecHybridRNNTCTCBPEModel(EncDecHybridRNNTCTCModel, ASRBPEMixin):
             ctc_decoding_cfg = OmegaConf.structured(CTCBPEDecodingConfig)
             with open_dict(self.cfg.aux_ctc):
                 self.cfg.aux_ctc.decoding = ctc_decoding_cfg
-        self.ctc_decoding = CTCBPEDecoding(self.cfg.aux_ctc.decoding, tokenizer=self.tokenizer)
+        if (self.tokenizer_type == "agg" or self.tokenizer_type == "multilingual") and "multisoftmax" in cfg.decoder: #CTEMO
+            self.ctc_decoding = CTCBPEDecoding(self.cfg.aux_ctc.decoding, tokenizer=self.tokenizer, blank_id=self.ctc_decoder._num_classes//len(self.tokenizer.tokenizers_dict.keys()))
+        else:
+            self.ctc_decoding = CTCBPEDecoding(self.cfg.aux_ctc.decoding, tokenizer=self.tokenizer)
 
         # Setup CTC WER
         self.ctc_wer = WER(
@@ -304,9 +341,14 @@ class EncDecHybridRNNTCTCBPEModel(EncDecHybridRNNTCTCModel, ASRBPEMixin):
         decoding_cfg = OmegaConf.merge(decoding_cls, decoding_cfg)
         decoding_cfg = self.set_decoding_type_according_to_loss(decoding_cfg)
 
-        self.decoding = RNNTBPEDecoding(
-            decoding_cfg=decoding_cfg, decoder=self.decoder, joint=self.joint, tokenizer=self.tokenizer,
-        )
+        if (self.tokenizer_type == "agg" or self.tokenizer_type == "multilingual") and "multisoftmax" in self.cfg.decoder: #CTEMO
+            self.decoding = RNNTBPEDecoding(
+                decoding_cfg=decoding_cfg, decoder=self.decoder, joint=self.joint, tokenizer=self.tokenizer, blank_id=self.ctc_decoder._num_classes // len(self.tokenizer.tokenizers_dict.keys())
+            )
+        else:
+            self.decoding = RNNTBPEDecoding(
+                decoding_cfg=decoding_cfg, decoder=self.decoder, joint=self.joint, tokenizer=self.tokenizer,
+            )
 
         self.wer = WER(
             decoding=self.decoding,
@@ -371,7 +413,10 @@ class EncDecHybridRNNTCTCBPEModel(EncDecHybridRNNTCTCModel, ASRBPEMixin):
             ctc_decoding_cls = OmegaConf.create(OmegaConf.to_container(ctc_decoding_cls))
             ctc_decoding_cfg = OmegaConf.merge(ctc_decoding_cls, ctc_decoding_cfg)
 
-            self.ctc_decoding = CTCBPEDecoding(decoding_cfg=ctc_decoding_cfg, tokenizer=self.tokenizer)
+            if (self.tokenizer_type == "agg" or self.tokenizer_type == "multilingual") and "multisoftmax" in self.cfg.decoder: #CTEMO
+                self.ctc_decoding = CTCBPEDecoding(decoding_cfg=ctc_decoding_cfg, tokenizer=self.tokenizer, blank_id=self.ctc_decoder._num_classes//len(self.tokenizer.tokenizers_dict.keys()))
+            else:
+                self.ctc_decoding = CTCBPEDecoding(decoding_cfg=ctc_decoding_cfg, tokenizer=self.tokenizer)
 
             self.ctc_wer = WER(
                 decoding=self.ctc_decoding,
@@ -411,9 +456,14 @@ class EncDecHybridRNNTCTCBPEModel(EncDecHybridRNNTCTCModel, ASRBPEMixin):
             decoding_cfg = OmegaConf.merge(decoding_cls, decoding_cfg)
             decoding_cfg = self.set_decoding_type_according_to_loss(decoding_cfg)
 
-            self.decoding = RNNTBPEDecoding(
-                decoding_cfg=decoding_cfg, decoder=self.decoder, joint=self.joint, tokenizer=self.tokenizer,
-            )
+            if (self.tokenizer_type == "agg" or self.tokenizer_type == "multilingual") and "multisoftmax" in self.cfg.decoder: #CTEMO
+                self.decoding = RNNTBPEDecoding(
+                    decoding_cfg=decoding_cfg, decoder=self.decoder, joint=self.joint, tokenizer=self.tokenizer, blank_id=self.ctc_decoder._num_classes // len(self.tokenizer.tokenizers_dict.keys())
+                )
+            else:
+                self.decoding = RNNTBPEDecoding(
+                    decoding_cfg=decoding_cfg, decoder=self.decoder, joint=self.joint, tokenizer=self.tokenizer,
+                )
 
             self.wer = WER(
                 decoding=self.decoding,
@@ -452,7 +502,10 @@ class EncDecHybridRNNTCTCBPEModel(EncDecHybridRNNTCTCModel, ASRBPEMixin):
             decoding_cls = OmegaConf.create(OmegaConf.to_container(decoding_cls))
             decoding_cfg = OmegaConf.merge(decoding_cls, decoding_cfg)
 
-            self.ctc_decoding = CTCBPEDecoding(decoding_cfg=decoding_cfg, tokenizer=self.tokenizer)
+            if (self.tokenizer_type == "agg" or self.tokenizer_type == "multilingual") and "multisoftmax" in self.cfg.decoder: #CTEMO
+                self.ctc_decoding = CTCBPEDecoding(decoding_cfg=decoding_cfg, tokenizer=self.tokenizer, blank_id=self.ctc_decoder._num_classes//len(self.tokenizer.tokenizers_dict.keys()))
+            else:
+                self.ctc_decoding = CTCBPEDecoding(decoding_cfg=decoding_cfg, tokenizer=self.tokenizer)
 
             self.ctc_wer = WER(
                 decoding=self.ctc_decoding,

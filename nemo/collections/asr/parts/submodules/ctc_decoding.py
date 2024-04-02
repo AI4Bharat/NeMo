@@ -314,6 +314,7 @@ class AbstractCTCDecoding(ConfidenceMixin):
         decoder_lengths: torch.Tensor = None,
         fold_consecutive: bool = True,
         return_hypotheses: bool = False,
+        lang_ids = None #CTEMO
     ) -> Tuple[List[str], Optional[List[List[str]]], Optional[Union[Hypothesis, NBestHypotheses]]]:
         """
         Decodes a sequence of labels to words
@@ -368,7 +369,7 @@ class AbstractCTCDecoding(ConfidenceMixin):
             for nbest_hyp in hypotheses_list:  # type: NBestHypotheses
                 n_hyps = nbest_hyp.n_best_hypotheses  # Extract all hypotheses for this sample
                 decoded_hyps = self.decode_hypothesis(
-                    n_hyps, fold_consecutive
+                    n_hyps, fold_consecutive, lang_ids
                 )  # type: List[Union[Hypothesis, NBestHypotheses]]
 
                 # If computing timestamps
@@ -389,7 +390,7 @@ class AbstractCTCDecoding(ConfidenceMixin):
 
         else:
             hypotheses = self.decode_hypothesis(
-                hypotheses_list, fold_consecutive
+                hypotheses_list, fold_consecutive, lang_ids
             )  # type: List[Union[Hypothesis, NBestHypotheses]]
 
             # If computing timestamps
@@ -412,7 +413,7 @@ class AbstractCTCDecoding(ConfidenceMixin):
             return best_hyp_text, None
 
     def decode_hypothesis(
-        self, hypotheses_list: List[Hypothesis], fold_consecutive: bool
+        self, hypotheses_list: List[Hypothesis], fold_consecutive: bool, lang_ids = None
     ) -> List[Union[Hypothesis, NBestHypotheses]]:
         """
         Decode a list of hypotheses into a list of strings.
@@ -477,7 +478,10 @@ class AbstractCTCDecoding(ConfidenceMixin):
                 # in order to compute exact time stamps.
                 hypothesis = (decoded_prediction, token_lengths, token_repetitions)
             else:
-                hypothesis = self.decode_tokens_to_str(decoded_prediction)
+                if lang_ids is not None:
+                    hypothesis = self.decode_tokens_to_str(decoded_prediction, lang_ids[ind])
+                else:
+                    hypothesis = self.decode_tokens_to_str(decoded_prediction)
 
                 # TODO: remove
                 # collapse leading spaces before . , ? for PC models
@@ -1207,8 +1211,9 @@ class CTCBPEDecoding(AbstractCTCDecoding):
         tokenizer: NeMo tokenizer object, which inherits from TokenizerSpec.
     """
 
-    def __init__(self, decoding_cfg, tokenizer: TokenizerSpec):
-        blank_id = tokenizer.tokenizer.vocab_size
+    def __init__(self, decoding_cfg, tokenizer: TokenizerSpec, blank_id = None): #CTEMO
+        if blank_id is None:
+            blank_id = tokenizer.tokenizer.vocab_size
         self.tokenizer = tokenizer
 
         super().__init__(decoding_cfg=decoding_cfg, blank_id=blank_id)
@@ -1244,7 +1249,7 @@ class CTCBPEDecoding(AbstractCTCDecoding):
             self.decode_tokens_to_str(hypothesis.text[0]).split(), hypothesis.token_confidence, hypothesis.text[0]
         )
 
-    def decode_tokens_to_str(self, tokens: List[int]) -> str:
+    def decode_tokens_to_str(self, tokens: List[int], lang: str = None) -> str: #CTEMO
         """
         Implemented by subclass in order to decoder a token list into a string.
 
@@ -1254,7 +1259,10 @@ class CTCBPEDecoding(AbstractCTCDecoding):
         Returns:
             A decoded string.
         """
-        hypothesis = self.tokenizer.ids_to_text(tokens)
+        if lang is not None: #CTEMO
+            hypothesis = self.tokenizer.ids_to_text(tokens, lang)
+        else:
+            hypothesis = self.tokenizer.ids_to_text(tokens)
         return hypothesis
 
     def decode_ids_to_tokens(self, tokens: List[int]) -> List[str]:

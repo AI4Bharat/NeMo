@@ -40,7 +40,7 @@ from nemo.collections.asr.parts.utils import rnnt_utils
 from nemo.collections.asr.parts.utils.asr_confidence_utils import ConfidenceMethodConfig, ConfidenceMethodMixin
 from nemo.collections.common.parts.rnn import label_collate
 from nemo.core.classes import Typing, typecheck
-from nemo.core.neural_types import AcousticEncodedRepresentation, HypothesisType, LengthsType, NeuralType
+from nemo.core.neural_types import AcousticEncodedRepresentation, HypothesisType, LengthsType, NeuralType, StringType
 from nemo.utils import logging
 
 
@@ -144,6 +144,7 @@ class _GreedyRNNTInfer(Typing, ConfidenceMethodMixin):
             "encoder_output": NeuralType(('B', 'D', 'T'), AcousticEncodedRepresentation()),
             "encoded_lengths": NeuralType(tuple('B'), LengthsType()),
             "partial_hypotheses": [NeuralType(elements_type=HypothesisType(), optional=True)],  # must always be last
+            "language_ids": [NeuralType(('B'), StringType(), optional=True)],  # must always be last #CTEMO
         }
 
     @property
@@ -220,7 +221,7 @@ class _GreedyRNNTInfer(Typing, ConfidenceMethodMixin):
         # output: [B, 1, K]
         return self.decoder.predict(label, hidden, add_sos=add_sos, batch_size=batch_size)
 
-    def _joint_step(self, enc, pred, log_normalize: Optional[bool] = None):
+    def _joint_step(self, enc, pred, log_normalize: Optional[bool] = None, language_ids=None): # CTEMO
         """
         Common joint step based on AbstractRNNTJoint implementation.
 
@@ -233,8 +234,12 @@ class _GreedyRNNTInfer(Typing, ConfidenceMethodMixin):
              logits of shape (B, T=1, U=1, V + 1)
         """
         with torch.no_grad():
-            logits = self.joint.joint(enc, pred)
-
+            #Old
+            # # logits = self.joint.joint(enc, pred)
+            ## New for multisoftmax
+            self.joint._fuse_loss_wer = False
+            logits = self.joint(encoder_outputs=enc.transpose(1, 2), decoder_outputs=pred.transpose(1, 2), language_ids=language_ids)
+            self.joint._fuse_loss_wer = True
             if log_normalize is None:
                 if not logits.is_cuda:  # Use log softmax only if on CPU
                     logits = logits.log_softmax(dim=len(logits.shape) - 1)
@@ -244,7 +249,7 @@ class _GreedyRNNTInfer(Typing, ConfidenceMethodMixin):
 
         return logits
 
-    def _joint_step_after_projection(self, enc, pred, log_normalize: Optional[bool] = None) -> torch.Tensor:
+    def _joint_step_after_projection(self, enc, pred, log_normalize: Optional[bool] = None,language_ids=None) -> torch.Tensor:
         """
         Common joint step based on AbstractRNNTJoint implementation.
 
@@ -257,7 +262,7 @@ class _GreedyRNNTInfer(Typing, ConfidenceMethodMixin):
              logits of shape (B, T=1, U=1, V + 1)
         """
         with torch.no_grad():
-            logits = self.joint.joint_after_projection(enc, pred)
+            logits = self.joint.joint_after_projection(enc, pred,language_ids)
 
             if log_normalize is None:
                 if not logits.is_cuda:  # Use log softmax only if on CPU
@@ -356,6 +361,8 @@ class GreedyRNNTInfer(_GreedyRNNTInfer):
         encoder_output: torch.Tensor,
         encoded_lengths: torch.Tensor,
         partial_hypotheses: Optional[List[rnnt_utils.Hypothesis]] = None,
+        language_ids: Optional[List[str]] = None
+        
     ):
         """Returns a list of hypotheses given an input batch of the encoder hidden embedding.
         Output token is generated auto-regressively.
@@ -639,6 +646,7 @@ class GreedyBatchedRNNTInfer(_GreedyRNNTInfer):
         encoder_output: torch.Tensor,
         encoded_lengths: torch.Tensor,
         partial_hypotheses: Optional[List[rnnt_utils.Hypothesis]] = None,
+        language_ids: Optional[List[str]] = None
     ):
         """Returns a list of hypotheses given an input batch of the encoder hidden embedding.
         Output token is generated auto-regressively.
@@ -667,7 +675,7 @@ class GreedyBatchedRNNTInfer(_GreedyRNNTInfer):
                 inseq = encoder_output  # [B, T, D]
 
                 hypotheses = self._greedy_decode(
-                    inseq, logitlen, device=inseq.device, partial_hypotheses=partial_hypotheses
+                    inseq, logitlen, device=inseq.device, partial_hypotheses=partial_hypotheses, language_ids=language_ids
                 )
 
             # Pack the hypotheses results
@@ -706,6 +714,7 @@ class GreedyBatchedRNNTInfer(_GreedyRNNTInfer):
         out_len: torch.Tensor,
         device: torch.device,
         partial_hypotheses: Optional[List[rnnt_utils.Hypothesis]] = None,
+        language_ids=None,
     ):
         if partial_hypotheses is not None:
             raise NotImplementedError("`partial_hypotheses` support is not supported")
@@ -775,7 +784,7 @@ class GreedyBatchedRNNTInfer(_GreedyRNNTInfer):
 
                     # Batched joint step - Output = [B, V + 1]
                     # If preserving per-frame confidence, log_normalize must be true
-                    logp = self._joint_step(f, g, log_normalize=True if self.preserve_frame_confidence else None)[
+                    logp = self._joint_step(f, g, log_normalize=True if self.preserve_frame_confidence else None, language_ids=language_ids)[
                         :, 0, 0, :
                     ]
 
@@ -905,6 +914,7 @@ class GreedyBatchedRNNTInfer(_GreedyRNNTInfer):
         out_len: torch.Tensor,
         device: torch.device,
         partial_hypotheses: Optional[List[rnnt_utils.Hypothesis]] = None,
+        language_ids=None,
     ):
         if partial_hypotheses is not None:
             raise NotImplementedError("`partial_hypotheses` support is not supported")
@@ -987,7 +997,7 @@ class GreedyBatchedRNNTInfer(_GreedyRNNTInfer):
 
                     # Batched joint step - Output = [B, V + 1]
                     # If preserving per-frame confidence, log_normalize must be true
-                    logp = self._joint_step(f, g, log_normalize=True if self.preserve_frame_confidence else None)[
+                    logp = self._joint_step(f, g, log_normalize=True if self.preserve_frame_confidence else None, language_ids=language_ids)[
                         :, 0, 0, :
                     ]
 
@@ -2400,6 +2410,7 @@ class GreedyTDTInfer(_GreedyRNNTInfer):
         encoder_output: torch.Tensor,
         encoded_lengths: torch.Tensor,
         partial_hypotheses: Optional[List[rnnt_utils.Hypothesis]] = None,
+        language_ids: Optional[List[str]] = None
     ):
         """Returns a list of hypotheses given an input batch of the encoder hidden embedding.
         Output token is generated auto-regressively.
@@ -2675,6 +2686,7 @@ class GreedyBatchedTDTInfer(_GreedyRNNTInfer):
         encoder_output: torch.Tensor,
         encoded_lengths: torch.Tensor,
         partial_hypotheses: Optional[List[rnnt_utils.Hypothesis]] = None,
+        language_ids: Optional[List[str]] = None
     ):
         """Returns a list of hypotheses given an input batch of the encoder hidden embedding.
         Output token is generated auto-regressively.

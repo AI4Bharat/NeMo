@@ -429,6 +429,7 @@ class AbstractRNNTDecoding(ConfidenceMixin):
         encoded_lengths: torch.Tensor,
         return_hypotheses: bool = False,
         partial_hypotheses: Optional[List[Hypothesis]] = None,
+        lang_ids: List[str] = None, #CTEMO
     ) -> Tuple[List[str], Optional[List[List[str]]], Optional[Union[Hypothesis, NBestHypotheses]]]:
         """
         Decode an encoder output by autoregressive decoding of the Decoder+Joint networks.
@@ -455,7 +456,7 @@ class AbstractRNNTDecoding(ConfidenceMixin):
         # Compute hypotheses
         with torch.inference_mode():
             hypotheses_list = self.decoding(
-                encoder_output=encoder_output, encoded_lengths=encoded_lengths, partial_hypotheses=partial_hypotheses
+                encoder_output=encoder_output, encoded_lengths=encoded_lengths, partial_hypotheses=partial_hypotheses, language_ids=lang_ids, #CTEMO
             )  # type: [List[Hypothesis]]
 
             # extract the hypotheses
@@ -469,7 +470,7 @@ class AbstractRNNTDecoding(ConfidenceMixin):
 
             for nbest_hyp in prediction_list:  # type: NBestHypotheses
                 n_hyps = nbest_hyp.n_best_hypotheses  # Extract all hypotheses for this sample
-                decoded_hyps = self.decode_hypothesis(n_hyps)  # type: List[str]
+                decoded_hyps = self.decode_hypothesis(n_hyps, lang_ids)  # type: List[str] #CTEMO
 
                 # If computing timestamps
                 if self.compute_timestamps is True:
@@ -488,7 +489,7 @@ class AbstractRNNTDecoding(ConfidenceMixin):
             return best_hyp_text, all_hyp_text
 
         else:
-            hypotheses = self.decode_hypothesis(prediction_list)  # type: List[str]
+            hypotheses = self.decode_hypothesis(prediction_list, lang_ids)  # type: List[str] #CTEMO
 
             # If computing timestamps
             if self.compute_timestamps is True:
@@ -507,7 +508,7 @@ class AbstractRNNTDecoding(ConfidenceMixin):
             best_hyp_text = [h.text for h in hypotheses]
             return best_hyp_text, None
 
-    def decode_hypothesis(self, hypotheses_list: List[Hypothesis]) -> List[Union[Hypothesis, NBestHypotheses]]:
+    def decode_hypothesis(self, hypotheses_list: List[Hypothesis], lang_ids: List[str] = None) -> List[Union[Hypothesis, NBestHypotheses]]: # CTEMO
         """
         Decode a list of hypotheses into a list of strings.
 
@@ -543,7 +544,10 @@ class AbstractRNNTDecoding(ConfidenceMixin):
                 token_repetitions = [1] * len(alignments)  # preserve number of repetitions per token
                 hypothesis = (prediction, alignments, token_repetitions)
             else:
-                hypothesis = self.decode_tokens_to_str(prediction)
+                if lang_ids is not None: #CTEMO
+                    hypothesis = self.decode_tokens_to_str(prediction, lang_ids[ind])
+                else:
+                    hypothesis = self.decode_tokens_to_str(prediction)
 
                 # TODO: remove
                 # collapse leading spaces before . , ? for PC models
@@ -1380,8 +1384,9 @@ class RNNTBPEDecoding(AbstractRNNTDecoding):
         tokenizer: The tokenizer which will be used for decoding.
     """
 
-    def __init__(self, decoding_cfg, decoder, joint, tokenizer: TokenizerSpec):
-        blank_id = tokenizer.tokenizer.vocab_size  # RNNT or TDT models.
+    def __init__(self, decoding_cfg, decoder, joint, tokenizer: TokenizerSpec, blank_id=None): # CTEMO
+        if blank_id is None: # CTEMO
+            blank_id = tokenizer.tokenizer.vocab_size  # RNNT or TDT models.
 
         # multi-blank RNNTs
         if hasattr(decoding_cfg, 'model_type') and decoding_cfg.model_type == 'multiblank':
@@ -1390,7 +1395,7 @@ class RNNTBPEDecoding(AbstractRNNTDecoding):
         self.tokenizer = tokenizer
 
         super(RNNTBPEDecoding, self).__init__(
-            decoding_cfg=decoding_cfg, decoder=decoder, joint=joint, blank_id=blank_id
+            decoding_cfg=decoding_cfg, decoder=decoder, joint=joint, blank_id=blank_id 
         )
 
         if isinstance(self.decoding, rnnt_beam_decoding.BeamRNNTInfer):
@@ -1412,7 +1417,7 @@ class RNNTBPEDecoding(AbstractRNNTDecoding):
             hypothesis.words, hypothesis.token_confidence, hypothesis.y_sequence
         )
 
-    def decode_tokens_to_str(self, tokens: List[int]) -> str:
+    def decode_tokens_to_str(self, tokens: List[int], lang: str = None) -> str:
         """
         Implemented by subclass in order to decoder a token list into a string.
 
@@ -1422,7 +1427,10 @@ class RNNTBPEDecoding(AbstractRNNTDecoding):
         Returns:
             A decoded string.
         """
-        hypothesis = self.tokenizer.ids_to_text(tokens)
+        if lang is not None: # CTEMO
+            hypothesis = self.tokenizer.ids_to_text(tokens, lang)
+        else:
+            hypothesis = self.tokenizer.ids_to_text(tokens)
         return hypothesis
 
     def decode_ids_to_tokens(self, tokens: List[int]) -> List[str]:
@@ -1465,7 +1473,7 @@ class RNNTBPEDecoding(AbstractRNNTDecoding):
         lang_list = self.tokenizer.ids_to_text_and_langs(tokens)
         return lang_list
 
-    def decode_hypothesis(self, hypotheses_list: List[Hypothesis]) -> List[Union[Hypothesis, NBestHypotheses]]:
+    def decode_hypothesis(self, hypotheses_list: List[Hypothesis], lang_ids: List[str] = None) -> List[Union[Hypothesis, NBestHypotheses]]: #CTEMO
         """
         Decode a list of hypotheses into a list of strings.
         Overrides the super() method optionally adding lang information
@@ -1476,7 +1484,7 @@ class RNNTBPEDecoding(AbstractRNNTDecoding):
         Returns:
             A list of strings.
         """
-        hypotheses = super().decode_hypothesis(hypotheses_list)
+        hypotheses = super().decode_hypothesis(hypotheses_list, lang_ids)
         if self.compute_langs:
             if isinstance(self.tokenizer, AggregateTokenizer):
                 for ind in range(len(hypotheses_list)):

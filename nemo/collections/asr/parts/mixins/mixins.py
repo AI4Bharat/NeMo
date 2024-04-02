@@ -59,6 +59,8 @@ class ASRBPEMixin(ABC):
             raise ValueError("`tokenizer.type` cannot be None")
         elif tokenizer_type.lower() == 'agg':
             self._setup_aggregate_tokenizer(tokenizer_cfg)
+        elif tokenizer_type.lower() == 'multilingual': #CTEMO
+            self._setup_aggregate_tokenizer(tokenizer_cfg) #CTEMO
         else:
             self._setup_monolingual_tokenizer(tokenizer_cfg)
 
@@ -222,7 +224,10 @@ class ASRBPEMixin(ABC):
                 {"_target_": tokenizer_cfg["custom_tokenizer"]["_target_"], "tokenizers": tokenizers_dict}
             )
         else:
-            self.tokenizer = tokenizers.AggregateTokenizer(tokenizers_dict)
+            if self.tokenizer_type == 'multilingual':
+                self.tokenizer = tokenizers.MultilingualTokenizer(tokenizers_dict)
+            else:
+                self.tokenizer = tokenizers.AggregateTokenizer(tokenizers_dict)
 
     def _make_tokenizer(self, tokenizer_cfg: DictConfig, lang=None):
 

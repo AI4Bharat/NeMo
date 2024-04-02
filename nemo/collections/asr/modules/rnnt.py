@@ -48,6 +48,7 @@ from nemo.core.neural_types import (
     LossType,
     NeuralType,
     SpectrogramType,
+    StringType
 )
 from nemo.utils import logging
 
@@ -625,6 +626,9 @@ class RNNTDecoder(rnnt_abstract.AbstractRNNTDecoder, Exportable, AdapterModuleMi
         normalization_mode: Optional[str] = None,
         random_state_sampling: bool = False,
         blank_as_pad: bool = True,
+        multisoftmax=False, #CTEMO
+        language_masks=None, #CTEMO
+        
     ):
         # Required arguments
         self.pred_hidden = prednet['pred_hidden']
@@ -655,6 +659,9 @@ class RNNTDecoder(rnnt_abstract.AbstractRNNTDecoder, Exportable, AdapterModuleMi
             rnn_hidden_size=prednet.get("rnn_hidden_size", -1),
         )
         self._rnnt_export = False
+
+        self.multisoftmax = multisoftmax #CTEMO
+        self.language_masks = language_masks #CTEMO
 
     @typecheck()
     def forward(self, targets, target_length, states=None):
@@ -1243,6 +1250,7 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
             "transcripts": NeuralType(('B', 'T'), LabelsType(), optional=True),
             "transcript_lengths": NeuralType(tuple('B'), LengthsType(), optional=True),
             "compute_wer": NeuralType(optional=True),
+            'language_ids': [NeuralType(('B'), StringType(), optional=True)], #CTEMO
         }
 
     @property
@@ -1294,6 +1302,11 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
         fuse_loss_wer: bool = False,
         fused_batch_size: Optional[int] = None,
         experimental_fuse_loss_wer: Any = None,
+        language_masks=None, #CTEMO
+        multilingual: bool = False, #CTEMO
+        language_keys: Optional[List] = None, #CTEMO
+        token_id_offsets=None, #CTEMO
+        offset_token_ids_by_token_id=None, #CTEMO
     ):
         super().__init__()
 
@@ -1302,6 +1315,11 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
         self._vocab_size = num_classes
         self._num_extra_outputs = num_extra_outputs
         self._num_classes = num_classes + 1 + num_extra_outputs  # 1 is for blank
+        self.language_masks = language_masks #CTEMO
+        self.token_id_offsets = token_id_offsets #CTEMO
+        self.offset_token_ids_by_token_id = offset_token_ids_by_token_id #CTEMO
+        self.multilingual = multilingual #CTEMO
+        self.language_keys = language_keys #CTEMO
 
         if experimental_fuse_loss_wer is not None:
             # Override fuse_loss_wer from deprecated argument
@@ -1360,6 +1378,7 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
         transcripts: Optional[torch.Tensor] = None,
         transcript_lengths: Optional[torch.Tensor] = None,
         compute_wer: bool = False,
+        language_ids=None, #CTEMO
     ) -> Union[torch.Tensor, List[Optional[torch.Tensor]]]:
         # encoder = (B, D, T)
         # decoder = (B, D, U) if passed, else None
@@ -1375,7 +1394,7 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
                     "decoder_outputs can only be None for fused step!"
                 )
 
-            out = self.joint(encoder_outputs, decoder_outputs)  # [B, T, U, V + 1]
+            out = self.joint(encoder_outputs, decoder_outputs, language_ids=language_ids)  # [B, T, U, V + 1] #CTEMO
             return out
 
         else:
@@ -1432,7 +1451,10 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
                         sub_dec = sub_dec.narrow(dim=1, start=0, length=int(max_sub_transcript_length + 1))
 
                     # Perform joint => [sub-batch, T', U', V + 1]
-                    sub_joint = self.joint(sub_enc, sub_dec)
+                    if language_ids is not None: #CTEMO
+                        sub_joint = self.joint(sub_enc, sub_dec, language_ids=language_ids[begin:end]) #CTEMO
+                    else:
+                        sub_joint = self.joint(sub_enc, sub_dec) #CTEMO
 
                     del sub_dec
 
@@ -1471,12 +1493,21 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
                     sub_transcripts = sub_transcripts.detach()
 
                     # Update WER on each process without syncing
-                    self.wer.update(
-                        predictions=sub_enc,
-                        predictions_lengths=sub_enc_lens,
-                        targets=sub_transcripts,
-                        targets_lengths=sub_transcript_lens,
-                    )
+                    if language_ids is not None: #CTEMO
+                        self.wer.update(
+                            predictions=sub_enc,
+                            predictions_lengths=sub_enc_lens,
+                            targets=sub_transcripts,
+                            targets_lengths=sub_transcript_lens,
+                            lang_ids=language_ids[begin:end]
+                        )
+                    else:
+                        self.wer.update(
+                            predictions=sub_enc,
+                            predictions_lengths=sub_enc_lens,
+                            targets=sub_transcripts,
+                            targets_lengths=sub_transcript_lens,
+                        )
                     # Sync and all_reduce on all processes, compute global WER
                     wer, wer_num, wer_denom = self.wer.compute()
                     self.wer.reset()
@@ -1527,7 +1558,7 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
         """
         return self.pred(prednet_output)
 
-    def joint_after_projection(self, f: torch.Tensor, g: torch.Tensor) -> torch.Tensor:
+    def joint_after_projection(self, f: torch.Tensor, g: torch.Tensor, language_ids=None) -> torch.Tensor: #CTEMO
         """
         Compute the joint step of the network after projection.
 
@@ -1566,8 +1597,17 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
         # Forward adapter modules on joint hidden
         if self.is_adapter_available():
             inp = self.forward_enabled_adapters(inp)
-
-        res = self.joint_net(inp)  # [B, T, U, V + 1]
+        if language_ids is not None: #CTEMO
+            
+            # Do partial forward of joint net (skipping the final linear)
+            for module in self.joint_net[:-1]:
+                inp = module(inp)  # [B, T, U, H]
+            res_single = []
+            for single_inp, lang in zip(inp, language_ids):
+                res_single.append(self.joint_net[-1][lang](single_inp))
+            res = torch.stack(res_single)
+        else:
+            res = self.joint_net(inp)  # [B, T, U, V + 1]
 
         del inp
 
@@ -1617,11 +1657,22 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
         elif activation == 'tanh':
             activation = torch.nn.Tanh()
 
-        layers = (
-            [activation]
-            + ([torch.nn.Dropout(p=dropout)] if dropout else [])
-            + [torch.nn.Linear(joint_n_hidden, num_classes)]
-        )
+        if self.multilingual: #CTEMO
+            final_layer = torch.nn.ModuleDict()
+            logging.info(f"Vocab size for each language: {self._vocab_size // len(self.language_keys)}")
+            for lang in self.language_keys:
+                final_layer[lang] = torch.nn.Linear(joint_n_hidden, (self._vocab_size // len(self.language_keys)+1))
+            layers = (
+                [activation]
+                + ([torch.nn.Dropout(p=dropout)] if dropout else [])
+                + [final_layer]
+            )
+        else:
+            layers = (
+                [activation]
+                + ([torch.nn.Dropout(p=dropout)] if dropout else [])
+                + [torch.nn.Linear(joint_n_hidden, num_classes)]
+            )
         return pred, enc, torch.nn.Sequential(*layers)
 
     # Adapter method overrides
@@ -1839,6 +1890,9 @@ class SampledRNNTJoint(RNNTJoint):
         preserve_memory: bool = False,
         fuse_loss_wer: bool = False,
         fused_batch_size: Optional[int] = None,
+        language_masks=None, #CTEMO
+        token_id_offsets=None, #CTEMO
+        offset_token_ids_by_token_id=None, #CTEMO
     ):
         super().__init__(
             jointnet=jointnet,
@@ -1848,6 +1902,9 @@ class SampledRNNTJoint(RNNTJoint):
             preserve_memory=preserve_memory,
             fuse_loss_wer=fuse_loss_wer,
             fused_batch_size=fused_batch_size,
+            language_masks=language_masks, #CTEMO
+            token_id_offsets=token_id_offsets, #CTEMO
+            offset_token_ids_by_token_id=offset_token_ids_by_token_id, #CTEMO
         )
         self.n_samples = n_samples
         self.register_buffer('blank_id', torch.tensor([self.num_classes_with_blank - 1]), persistent=False)
@@ -1861,6 +1918,7 @@ class SampledRNNTJoint(RNNTJoint):
         transcripts: Optional[torch.Tensor] = None,
         transcript_lengths: Optional[torch.Tensor] = None,
         compute_wer: bool = False,
+        language_ids=None, #CTEMO
     ) -> Union[torch.Tensor, List[Optional[torch.Tensor]]]:
         # If in inference mode, revert to basic RNNT Joint behaviour.
         # Sampled RNNT is only used for training.
@@ -1873,6 +1931,7 @@ class SampledRNNTJoint(RNNTJoint):
                 transcripts=transcripts,
                 transcript_lengths=transcript_lengths,
                 compute_wer=compute_wer,
+                language_ids=language_ids, #CTEMO
             )
 
         if transcripts is None or transcript_lengths is None:
@@ -1950,9 +2009,14 @@ class SampledRNNTJoint(RNNTJoint):
                     sub_transcripts = sub_transcripts.narrow(dim=1, start=0, length=int(max_sub_transcript_length))
 
                 # Perform sampled joint => [sub-batch, T', U', {V' < V} + 1}]
-                sub_joint, sub_transcripts_remapped = self.sampled_joint(
-                    sub_enc, sub_dec, transcript=sub_transcripts, transcript_lengths=sub_transcript_lens
-                )
+                if language_ids is not None: #CTEMO
+                    sub_joint, sub_transcripts_remapped = self.sampled_joint(
+                        sub_enc, sub_dec, transcript=sub_transcripts, transcript_lengths=sub_transcript_lens, language_ids=language_ids[begin:end]
+                    )
+                else:
+                    sub_joint, sub_transcripts_remapped = self.sampled_joint(
+                        sub_enc, sub_dec, transcript=sub_transcripts, transcript_lengths=sub_transcript_lens
+                    )
 
                 del sub_dec
 
@@ -1994,12 +2058,21 @@ class SampledRNNTJoint(RNNTJoint):
                 sub_transcripts = sub_transcripts.detach()
 
                 # Update WER on each process without syncing
-                self.wer.update(
-                    predictions=sub_enc,
-                    predictions_lengths=sub_enc_lens,
-                    targets=sub_transcripts,
-                    targets_lengths=sub_transcript_lens,
-                )
+                if language_ids is not None: #CTEMO
+                    self.wer.update(
+                        predictions=sub_enc,
+                        predictions_lengths=sub_enc_lens,
+                        targets=sub_transcripts,
+                        targets_lengths=sub_transcript_lens,
+                        lang_ids=language_ids[begin:end]
+                    )
+                else:
+                    self.wer.update(
+                        predictions=sub_enc,
+                        predictions_lengths=sub_enc_lens,
+                        targets=sub_transcripts,
+                        targets_lengths=sub_transcript_lens,
+                    )
 
                 # Sync and all_reduce on all processes, compute global WER
                 wer, wer_num, wer_denom = self.wer.compute()
@@ -2028,7 +2101,7 @@ class SampledRNNTJoint(RNNTJoint):
         return losses, wer, wer_num, wer_denom
 
     def sampled_joint(
-        self, f: torch.Tensor, g: torch.Tensor, transcript: torch.Tensor, transcript_lengths: torch.Tensor,
+        self, f: torch.Tensor, g: torch.Tensor, transcript: torch.Tensor, transcript_lengths: torch.Tensor, language_ids=None, #CTEMO
     ) -> torch.Tensor:
         """
         Compute the sampled joint step of the network.
@@ -2098,6 +2171,18 @@ class SampledRNNTJoint(RNNTJoint):
         # Begin compute of sampled RNNT joint
         with torch.no_grad():
             # gather true labels
+            if language_ids is not None: #CTEMO
+                transcript_with_offset = []
+                for t, lang in zip(transcript, language_ids):
+                    offset_transcript = []
+                    for t_token in t.tolist():
+                        if t_token != 0:
+                            offset_transcript.append(t_token+self.token_id_offsets[lang])
+                        else:
+                            offset_transcript.append(0)
+                    transcript_with_offset.append(offset_transcript)
+                transcript = torch.tensor(transcript_with_offset, dtype=transcript.dtype, device=transcript.device)
+
             transcript_vocab_ids = torch.unique(transcript)
 
             # augment with blank token id
@@ -2131,6 +2216,10 @@ class SampledRNNTJoint(RNNTJoint):
             # new_transcript = [1, 0, 2, 3, 2, 0]
             index = torch.bucketize(transcript.ravel(), palette)
             transcript = key[index].reshape(transcript.shape)
+            if language_ids is not None: #CTEMO
+                # remap to original transcript ids which are without offsets for multi-softmax
+                new_transcript = [[self.offset_token_ids_by_token_id[idx.item()] for idx in t] for t in transcript]
+                transcript = torch.tensor(new_transcript, dtype=transcript.dtype)
             transcript = transcript.to(t_device)
 
         # Extract out partial weight tensor and bias tensor of just the V_Pos vocabulary from the full joint.
@@ -2193,8 +2282,24 @@ class SampledRNNTJoint(RNNTJoint):
         # Here, we simply concatenate the two tensors to construct the joint with V_Sampled vocab
         # because before we have properly asserted that Intersection(V_Pos, V_Neg) is a null set.
         res = torch.cat([transcript_scores, noise_scores], dim=-1)
+        # Multisoftmax language-wise sampling of output
+        if language_ids is not None: #CTEMO
+            sample_mask = []
+            sampled_vocab = transcript_vocab_ids.tolist() + accept_samples.tolist() 
+            for lang_idx in language_ids:
+                sample_mask.append([self.language_masks[lang_idx][v] for v in sampled_vocab])    
+            sample_mask = torch.tensor(sample_mask, dtype=torch.bool) # .to(decoder_output.device)
+            # Repeat across timesteps [B, T, U, V + 1]
+            sample_mask = sample_mask.unsqueeze(1)
+            sample_mask = sample_mask.repeat(1, res.shape[1], 1)
+            sample_mask = sample_mask.unsqueeze(2)
+            mask = sample_mask.repeat(1, 1, res.shape[2], 1)
+            # Send mask to GPU
+            mask = mask.to(res.device)
+            print(res.shape, mask.shape)
+            res = torch.masked_select(res, mask).view(res.shape[0],res.shape[1],res.shape[2],-1)
 
-        del inp
+        del inp, mask
 
         if self.preserve_memory:
             torch.cuda.empty_cache()

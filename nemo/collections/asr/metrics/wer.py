@@ -266,14 +266,15 @@ class WER(Metric):
         self.has_spl_tokens = False
         self.decode = None
         if isinstance(self.decoding, AbstractRNNTDecoding):
-            self.decode = lambda predictions, predictions_lengths, predictions_mask, input_ids, targets: self.decoding.rnnt_decoder_predictions_tensor(
-                encoder_output=predictions, encoded_lengths=predictions_lengths
+            self.decode = lambda predictions, predictions_lengths, predictions_mask, input_ids, targets, lang_ids : self.decoding.rnnt_decoder_predictions_tensor(
+                encoder_output=predictions, encoded_lengths=predictions_lengths, lang_ids = lang_ids
             )
         elif isinstance(self.decoding, AbstractCTCDecoding):
-            self.decode = lambda predictions, predictions_lengths, predictions_mask, input_ids, targets: self.decoding.ctc_decoder_predictions_tensor(
+            self.decode = lambda predictions, predictions_lengths, predictions_mask, input_ids, targets, lang_ids: self.decoding.ctc_decoder_predictions_tensor(
                 decoder_outputs=predictions,
                 decoder_lengths=predictions_lengths,
                 fold_consecutive=self.fold_consecutive,
+                lang_ids = lang_ids
             )
         elif isinstance(self.decoding, AbstractMultiTaskDecoding):
             self.has_spl_tokens = True
@@ -297,6 +298,7 @@ class WER(Metric):
         targets_lengths: torch.Tensor,
         predictions_mask: Optional[torch.Tensor] = None,
         input_ids: Optional[torch.Tensor] = None,
+        lang_ids: List[str] = None
     ):
         """
         Updates metric state.
@@ -322,9 +324,12 @@ class WER(Metric):
             for ind in range(targets_cpu_tensor.shape[0]):
                 tgt_len = tgt_lenths_cpu_tensor[ind].item()
                 target = targets_cpu_tensor[ind][:tgt_len].numpy().tolist()
-                reference = self.decoding.decode_tokens_to_str(target)
+                if lang_ids is not None: # CTEMO
+                    reference = self.decoding.decode_tokens_to_str(target, lang_ids[ind])
+                else:
+                    reference = self.decoding.decode_tokens_to_str(target)
                 references.append(reference)
-            hypotheses, _ = self.decode(predictions, predictions_lengths, predictions_mask, input_ids, targets)
+            hypotheses, _ = self.decode(predictions, predictions_lengths, predictions_mask, input_ids, targets, lang_ids) #CTEMO
 
             if self.has_spl_tokens:
                 hypotheses = [self.decoding.strip_special_tokens(hyp) for hyp in hypotheses]

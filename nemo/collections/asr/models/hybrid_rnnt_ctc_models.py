@@ -105,6 +105,7 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin):
         augmentor: DictConfig = None,
         verbose: bool = True,
         override_config: Optional[TranscribeConfig] = None,
+        language_id: str = None, #CTEMO
     ) -> TranscriptionReturnType:
         """
         Uses greedy decoding to transcribe audio files. Use this method for debugging and prototyping.
@@ -144,6 +145,7 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin):
             augmentor=augmentor,
             verbose=verbose,
             override_config=override_config,
+            language_id = language_id #CTEMO
         )
 
     def _transcribe_on_begin(self, audio, trcfg: TranscribeConfig):
@@ -164,9 +166,12 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin):
 
         # CTC Path
         encoded, encoded_len = self.forward(input_signal=batch[0], input_signal_length=batch[1])
-
-        logits = self.ctc_decoder(encoder_output=encoded)
-        output = dict(logits=logits, encoded_len=encoded_len)
+        if "multisoftmax" not in self.cfg.decoder:
+            language_ids = None
+        else:
+            language_ids = [language_id] * len(batch[0])
+        logits = self.ctc_decoder(encoder_output=encoded, language_ids=language_ids)
+        output = dict(logits=logits, encoded_len=encoded_len, language_ids=language_ids)
 
         del encoded
         return output
@@ -180,9 +185,10 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin):
         # CTC Path
         logits = outputs.pop('logits')
         encoded_len = outputs.pop('encoded_len')
+        language_ids = outputs.pop('language_ids')
 
         best_hyp, all_hyp = self.ctc_decoding.ctc_decoder_predictions_tensor(
-            logits, encoded_len, return_hypotheses=trcfg.return_hypotheses,
+            logits, encoded_len, return_hypotheses=trcfg.return_hypotheses, lang_ids=language_ids
         )
         logits = logits.cpu()
 
@@ -345,7 +351,11 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin):
         if self.is_interctc_enabled():
             AccessMixin.set_access_enabled(access_enabled=True, guid=self.model_guid)
 
-        signal, signal_len, transcript, transcript_len = batch
+        if "multisoftmax" not in self.cfg.decoder: #CTEMO
+            signal, signal_len, transcript, transcript_len = batch
+            language_ids = None
+        else:
+            signal, signal_len, transcript, transcript_len, sample_ids, language_ids = batch
 
         # forward() only performs encoder forward
         if isinstance(batch, DALIOutputs) and batch.has_processed_signal:
@@ -372,7 +382,7 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin):
         # If fused Joint-Loss-WER is not used
         if not self.joint.fuse_loss_wer:
             # Compute full joint and loss
-            joint = self.joint(encoder_outputs=encoded, decoder_outputs=decoder)
+            joint = self.joint(encoder_outputs=encoded, decoder_outputs=decoder, language_ids=language_ids) #CTEMO
             loss_value = self.loss(
                 log_probs=joint, targets=transcript, input_lengths=encoded_len, target_lengths=target_length
             )
@@ -405,6 +415,7 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin):
                 transcripts=transcript,
                 transcript_lengths=transcript_len,
                 compute_wer=compute_wer,
+                language_ids=language_ids
             )
 
             # Add auxiliary losses, if registered
@@ -419,7 +430,7 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin):
                 tensorboard_logs.update({'training_batch_wer': wer})
 
         if self.ctc_loss_weight > 0:
-            log_probs = self.ctc_decoder(encoder_output=encoded)
+            log_probs = self.ctc_decoder(encoder_output=encoded, language_ids=language_ids)
             ctc_loss = self.ctc_loss(
                 log_probs=log_probs, targets=transcript, input_lengths=encoded_len, target_lengths=transcript_len
             )
@@ -427,12 +438,21 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin):
             tensorboard_logs['train_ctc_loss'] = ctc_loss
             loss_value = (1 - self.ctc_loss_weight) * loss_value + self.ctc_loss_weight * ctc_loss
             if compute_wer:
-                self.ctc_wer.update(
-                    predictions=log_probs,
-                    targets=transcript,
-                    targets_lengths=transcript_len,
-                    predictions_lengths=encoded_len,
-                )
+                if "multisoftmax" in self.cfg.decoder:
+                    self.ctc_wer.update(
+                        predictions=log_probs,
+                        targets=transcript,
+                        targets_lengths=transcript_len,
+                        predictions_lengths=encoded_len,
+                        lang_ids=language_ids,
+                    )
+                else:
+                    self.ctc_wer.update(
+                        predictions=log_probs,
+                        targets=transcript,
+                        targets_lengths=transcript_len,
+                        predictions_lengths=encoded_len,
+                    )
                 ctc_wer, _, _ = self.ctc_wer.compute()
                 self.ctc_wer.reset()
                 tensorboard_logs.update({'training_batch_wer_ctc': ctc_wer})
@@ -462,7 +482,11 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin):
 
     def predict_step(self, batch, batch_idx, dataloader_idx=0):
         # TODO: add support for CTC decoding
-        signal, signal_len, transcript, transcript_len, sample_id = batch
+        if "multisoftmax" not in self.cfg.decoder: #CTEMO
+            signal, signal_len, transcript, transcript_len = batch
+            language_ids = None
+        else:
+            signal, signal_len, transcript, transcript_len, sample_ids, language_ids = batch
 
         # forward() only performs encoder forward
         if isinstance(batch, DALIOutputs) and batch.has_processed_signal:
@@ -471,9 +495,14 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin):
             encoded, encoded_len = self.forward(input_signal=signal, input_signal_length=signal_len)
         del signal
 
-        best_hyp_text, all_hyp_text = self.decoding.rnnt_decoder_predictions_tensor(
-            encoder_output=encoded, encoded_lengths=encoded_len, return_hypotheses=False
-        )
+        if "multisoftmax" in self.cfg.decoder: #CTEMO
+            best_hyp_text, all_hyp_text = self.decoding.rnnt_decoder_predictions_tensor(
+                encoder_output=encoded, encoded_lengths=encoded_len, return_hypotheses=False, lang_ids=language_ids
+            )
+        else:
+            best_hyp_text, all_hyp_text = self.decoding.rnnt_decoder_predictions_tensor(
+                encoder_output=encoded, encoded_lengths=encoded_len, return_hypotheses=False
+            )
 
         sample_id = sample_id.cpu().detach().numpy()
         return list(zip(sample_id, best_hyp_text))
@@ -482,7 +511,11 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin):
         if self.is_interctc_enabled():
             AccessMixin.set_access_enabled(access_enabled=True, guid=self.model_guid)
 
-        signal, signal_len, transcript, transcript_len = batch
+        if "multisoftmax" not in self.cfg.decoder:
+            signal, signal_len, transcript, transcript_len = batch
+            language_ids=None
+        else:
+            signal, signal_len, transcript, transcript_len, sample_ids, language_ids = batch
 
         # forward() only performs encoder forward
         if isinstance(batch, DALIOutputs) and batch.has_processed_signal:
@@ -498,19 +531,28 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin):
         if not self.joint.fuse_loss_wer:
             if self.compute_eval_loss:
                 decoder, target_length, states = self.decoder(targets=transcript, target_length=transcript_len)
-                joint = self.joint(encoder_outputs=encoded, decoder_outputs=decoder)
+                joint = self.joint(encoder_outputs=encoded, decoder_outputs=decoder, language_ids=language_ids) # CTEMO
 
                 loss_value = self.loss(
                     log_probs=joint, targets=transcript, input_lengths=encoded_len, target_lengths=target_length
                 )
                 tensorboard_logs['val_loss'] = loss_value
 
-            self.wer.update(
-                predictions=encoded,
-                predictions_lengths=encoded_len,
-                targets=transcript,
-                targets_lengths=transcript_len,
-            )
+            if "multisoftmax" in self.cfg.decoder: #CTEMO
+                self.ctc_wer.update(
+                    predictions=log_probs,
+                    targets=transcript,
+                    targets_lengths=transcript_len,
+                    predictions_lengths=encoded_len,
+                    lang_ids=language_ids,
+                )
+            else:
+                self.ctc_wer.update(
+                    predictions=log_probs,
+                    targets=transcript,
+                    targets_lengths=transcript_len,
+                    predictions_lengths=encoded_len,
+                )
             wer, wer_num, wer_denom = self.wer.compute()
             self.wer.reset()
 
@@ -536,6 +578,7 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin):
                 transcripts=transcript,
                 transcript_lengths=target_len,
                 compute_wer=compute_wer,
+                language_ids=language_ids #CTEMO
             )
             if loss_value is not None:
                 tensorboard_logs['val_loss'] = loss_value
@@ -544,7 +587,7 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin):
             tensorboard_logs['val_wer_denom'] = wer_denom
             tensorboard_logs['val_wer'] = wer
 
-        log_probs = self.ctc_decoder(encoder_output=encoded)
+        log_probs = self.ctc_decoder(encoder_output=encoded, language_ids=language_ids) #CTEMO
         if self.compute_eval_loss:
             ctc_loss = self.ctc_loss(
                 log_probs=log_probs, targets=transcript, input_lengths=encoded_len, target_lengths=transcript_len
@@ -554,7 +597,7 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin):
             loss_value = (1 - self.ctc_loss_weight) * loss_value + self.ctc_loss_weight * ctc_loss
             tensorboard_logs['val_loss'] = loss_value
         self.ctc_wer.update(
-            predictions=log_probs, targets=transcript, targets_lengths=transcript_len, predictions_lengths=encoded_len,
+            predictions=log_probs, targets=transcript, targets_lengths=transcript_len, predictions_lengths=encoded_len, lang_ids=language_ids #CTEMO
         )
         ctc_wer, ctc_wer_num, ctc_wer_denom = self.ctc_wer.compute()
         self.ctc_wer.reset()

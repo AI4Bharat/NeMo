@@ -155,6 +155,7 @@ def get_char_dataset(config: dict, augmentor: Optional['AudioAugmentor'] = None)
         trim=config.get('trim_silence', False),
         parser=config.get('parser', 'en'),
         return_sample_id=config.get('return_sample_id', False),
+        return_language_id=config.get('return_language_id', False), #CTEMO
         channel_selector=config.get('channel_selector', None),
     )
     return dataset
@@ -235,6 +236,7 @@ def get_bpe_dataset(
         trim=config.get('trim_silence', False),
         use_start_end_token=config.get('use_start_end_token', True),
         return_sample_id=config.get('return_sample_id', False),
+        return_language_id=config.get('return_language_id', False), #CTEMO
         channel_selector=config.get('channel_selector', None),
     )
     return dataset
