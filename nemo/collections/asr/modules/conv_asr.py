@@ -453,6 +453,7 @@ class ConvASRDecoder(NeuralModule, Exportable, adapter_mixins.AdapterModuleMixin
         self.temperature = 1.0
         self.multisoftmax = multisoftmax
         self.language_masks = language_masks
+    
     @typecheck()
     def forward(self, encoder_output, language_ids=None): #CTEMO
         # Adapter module forward step
@@ -477,9 +478,8 @@ class ConvASRDecoder(NeuralModule, Exportable, adapter_mixins.AdapterModuleMixin
             # Send mask to GPU
             mask = mask.to(decoder_output.device)
             # masked_output = self.masked_softmax(decoder_output, mask) # B x T x 3073 -> B x T x 257
-            decoder_output = torch.masked_select(decoder_output, mask).view(decoder_output.shape[0],decoder_output.shape[1],-1)
-        
-        del mask
+            decoder_output = torch.masked_select(decoder_output, mask).view(decoder_output.shape[0],decoder_output.shape[1],-1)    
+            del mask
         # print(mask[0][0])
         # softmax_output = self.masked_softmax(decoder_output, mask)
         # return softmax_output

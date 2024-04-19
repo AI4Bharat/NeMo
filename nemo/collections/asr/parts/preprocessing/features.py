@@ -63,12 +63,12 @@ def normalize_batch(x, seq_len, normalize_type):
         x_mean = torch.zeros((seq_len.shape[0], x.shape[1]), dtype=x.dtype, device=x.device)
         x_std = torch.zeros((seq_len.shape[0], x.shape[1]), dtype=x.dtype, device=x.device)
         for i in range(x.shape[0]):
-            if x[i, :, : seq_len[i]].shape[1] == 1:
-                raise ValueError(
-                    "normalize_batch with `per_feature` normalize_type received a tensor of length 1. This will result "
-                    "in torch.std() returning nan. Make sure your audio length has enough samples for a single "
-                    "feature (ex. at least `hop_length` for Mel Spectrograms)."
-                )
+            # if x[i, :, : seq_len[i]].shape[1] == 1:
+            #     raise ValueError(
+            #         "normalize_batch with `per_feature` normalize_type received a tensor of length 1. This will result "
+            #         "in torch.std() returning nan. Make sure your audio length has enough samples for a single "
+            #         "feature (ex. at least `hop_length` for Mel Spectrograms)."
+            #     )
             x_mean[i, :] = x[i, :, : seq_len[i]].mean(dim=1)
             x_std[i, :] = x[i, :, : seq_len[i]].std(dim=1)
         # make sure x_std is not zero

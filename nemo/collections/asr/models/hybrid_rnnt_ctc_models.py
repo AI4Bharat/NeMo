@@ -106,6 +106,7 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin):
         verbose: bool = True,
         override_config: Optional[TranscribeConfig] = None,
         language_id: str = None, #CTEMO
+        logprobs: bool = False,
     ) -> TranscriptionReturnType:
         """
         Uses greedy decoding to transcribe audio files. Use this method for debugging and prototyping.
@@ -145,7 +146,8 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin):
             augmentor=augmentor,
             verbose=verbose,
             override_config=override_config,
-            language_id = language_id #CTEMO
+            language_id = language_id, #CTEMO
+            logprobs=logprobs
         )
 
     def _transcribe_on_begin(self, audio, trcfg: TranscribeConfig):
@@ -161,6 +163,7 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin):
             self.ctc_decoder.unfreeze()
 
     def _transcribe_forward(self, batch: Any, trcfg: TranscribeConfig):
+        
         if self.cur_decoder == "rnnt":
             return super()._transcribe_forward(batch, trcfg)
 
@@ -172,7 +175,7 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin):
             language_ids = [language_id] * len(batch[0])
         logits = self.ctc_decoder(encoder_output=encoded, language_ids=language_ids)
         output = dict(logits=logits, encoded_len=encoded_len, language_ids=language_ids)
-
+        
         del encoded
         return output
 
@@ -200,9 +203,11 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin):
                     best_hyp[idx].alignments = best_hyp[idx].y_sequence
 
         # DEPRECATED?
-        # if logprobs:
-        #     for logit, elen in zip(logits, encoded_len):
-        #         logits_list.append(logit[:elen])
+        if trcfg.logprobs:
+            logits_list = []
+            for logit, elen in zip(logits, encoded_len):
+                logits_list.append(logit[:elen])
+            return logits_list
 
         del logits, encoded_len
 

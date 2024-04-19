@@ -244,6 +244,7 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
         verbose: bool = True,
         language_id: str = None, #CTEMO
         override_config: Optional[TranscribeConfig] = None,
+        logprobs: bool = False,
     ) -> TranscriptionReturnType:
         """
         Uses greedy decoding to transcribe audio files. Use this method for debugging and prototyping.
@@ -281,6 +282,7 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
             augmentor=augmentor,
             verbose=verbose,
             override_config=override_config,
+            logprobs=logprobs,
             # Additional arguments
             partial_hypothesis=partial_hypothesis,
         )
