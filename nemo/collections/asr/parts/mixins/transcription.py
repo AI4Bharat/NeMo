@@ -61,6 +61,7 @@ class TranscribeConfig:
     augmentor: Optional[DictConfig] = None
     verbose: bool = True
     logprobs: bool = False
+    language_id: str = None
 
     # Utility
     partial_hypothesis: Optional[List[Any]] = None
@@ -196,6 +197,7 @@ class TranscriptionMixin(ABC):
         verbose: bool = True,
         override_config: Optional[TranscribeConfig] = None,
         logprobs: bool = False,
+        language_id: str = None,
         **config_kwargs,
     ) -> GenericTranscriptionType:
         """
@@ -245,6 +247,7 @@ class TranscriptionMixin(ABC):
                 augmentor=augmentor,
                 verbose=verbose,
                 logprobs=logprobs,
+                language_id=language_id,
                 **config_kwargs,
             )
         else:

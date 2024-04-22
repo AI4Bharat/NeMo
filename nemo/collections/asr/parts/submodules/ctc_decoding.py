@@ -1211,7 +1211,7 @@ class CTCBPEDecoding(AbstractCTCDecoding):
         tokenizer: NeMo tokenizer object, which inherits from TokenizerSpec.
     """
 
-    def __init__(self, decoding_cfg, tokenizer: TokenizerSpec, blank_id = None): #CTEMO
+    def __init__(self, decoding_cfg, tokenizer: TokenizerSpec, blank_id = None, lang_id: str = None): #CTEMO
         if blank_id is None:
             blank_id = tokenizer.tokenizer.vocab_size
         self.tokenizer = tokenizer
@@ -1223,7 +1223,12 @@ class CTCBPEDecoding(AbstractCTCDecoding):
             if hasattr(self.tokenizer.tokenizer, 'get_vocab'):
                 vocab_dict = self.tokenizer.tokenizer.get_vocab()
                 if isinstance(self.tokenizer.tokenizer, DummyTokenizer):  # AggregateTokenizer.DummyTokenizer
-                    vocab = vocab_dict
+                    if lang_id is not None:
+                        tokenizer = self.tokenizer.tokenizers_dict[lang_id]
+                        vocab_dict = tokenizer.tokenizer.get_vocab()
+                        vocab = list(vocab_dict.keys())
+                    else:
+                        vocab = vocab_dict
                 else:
                     vocab = list(vocab_dict.keys())
                 self.decoding.set_vocabulary(vocab)

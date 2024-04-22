@@ -17,21 +17,10 @@ from typing import Dict, List, Union
 import numpy as np
 
 from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
+from nemo.collections.common.tokenizers.aggregate_tokenizer import DummyTokenizer
 from nemo.utils import logging
 
 __all__ = ['MultilingualTokenizer']
-
-
-class DummyTokenizer:
-    def __init__(self, vocab):
-        self.vocab = vocab
-        self.vocab_size = len(vocab)
-
-    # minimum compatibility
-    # since all the monolingual tokenizers have a vocab
-    # additional methods could be added here
-    def get_vocab(self):
-        return self.vocab
 
 
 class MultilingualTokenizer(TokenizerSpec):

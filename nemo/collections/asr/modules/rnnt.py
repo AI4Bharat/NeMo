@@ -1597,6 +1597,7 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
         # Forward adapter modules on joint hidden
         if self.is_adapter_available():
             inp = self.forward_enabled_adapters(inp)
+
         if language_ids is not None: #CTEMO
             
             # Do partial forward of joint net (skipping the final linear)

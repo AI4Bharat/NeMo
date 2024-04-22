@@ -283,6 +283,7 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
             verbose=verbose,
             override_config=override_config,
             logprobs=logprobs,
+            language_id=language_id,
             # Additional arguments
             partial_hypothesis=partial_hypothesis,
         )
@@ -880,12 +881,18 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
     ) -> Tuple[List['Hypothesis'], List['Hypothesis']]:
         encoded = outputs.pop('encoded')
         encoded_len = outputs.pop('encoded_len')
+        
+        if "multisoftmax" not in self.cfg.decoder:
+            language_ids = None
+        else:
+            language_ids = [trcfg.language_id] * len(encoded)
 
         best_hyp, all_hyp = self.decoding.rnnt_decoder_predictions_tensor(
             encoded,
             encoded_len,
             return_hypotheses=trcfg.return_hypotheses,
             partial_hypotheses=trcfg.partial_hypothesis,
+            lang_ids=language_ids,
         )
 
         # cleanup memory

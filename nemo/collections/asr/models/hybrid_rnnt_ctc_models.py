@@ -172,7 +172,7 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin):
         if "multisoftmax" not in self.cfg.decoder:
             language_ids = None
         else:
-            language_ids = [language_id] * len(batch[0])
+            language_ids = [trcfg.language_id] * len(batch[0])
         logits = self.ctc_decoder(encoder_output=encoded, language_ids=language_ids)
         output = dict(logits=logits, encoded_len=encoded_len, language_ids=language_ids)
         

@@ -124,6 +124,8 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, InterCTCMi
         channel_selector: Optional[ChannelSelectorType] = None,
         augmentor: DictConfig = None,
         verbose: bool = True,
+        logprobs: bool = False,
+        language_id: str = None,
         override_config: Optional[TranscribeConfig] = None,
     ) -> TranscriptionReturnType:
         """
@@ -159,6 +161,7 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, InterCTCMi
             channel_selector=channel_selector,
             augmentor=augmentor,
             verbose=verbose,
+            language_id=language_id,
             override_config=override_config,
         )
 

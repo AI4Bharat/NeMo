@@ -434,7 +434,7 @@ class EncDecHybridRNNTCTCBPEModel(EncDecHybridRNNTCTCModel, ASRBPEMixin):
 
             logging.info(f"Changed tokenizer of the CTC decoder to {self.ctc_decoder.vocabulary} vocabulary.")
 
-    def change_decoding_strategy(self, decoding_cfg: DictConfig = None, decoder_type: str = None):
+    def change_decoding_strategy(self, decoding_cfg: DictConfig = None, decoder_type: str = None, lang_id: str=None):
         """
         Changes decoding strategy used during RNNT decoding process.
         Args:
@@ -458,7 +458,8 @@ class EncDecHybridRNNTCTCBPEModel(EncDecHybridRNNTCTCModel, ASRBPEMixin):
 
             if (self.tokenizer_type == "agg" or self.tokenizer_type == "multilingual") and "multisoftmax" in self.cfg.decoder: #CTEMO
                 self.decoding = RNNTBPEDecoding(
-                    decoding_cfg=decoding_cfg, decoder=self.decoder, joint=self.joint, tokenizer=self.tokenizer, blank_id=self.ctc_decoder._num_classes // len(self.tokenizer.tokenizers_dict.keys())
+                    decoding_cfg=decoding_cfg, decoder=self.decoder, joint=self.joint, tokenizer=self.tokenizer, blank_id=self.ctc_decoder._num_classes // len(self.tokenizer.tokenizers_dict.keys()),
+                    # lang_id=lang_id
                 )
             else:
                 self.decoding = RNNTBPEDecoding(
@@ -488,7 +489,7 @@ class EncDecHybridRNNTCTCBPEModel(EncDecHybridRNNTCTCModel, ASRBPEMixin):
 
             self.cur_decoder = "rnnt"
             logging.info(f"Changed decoding strategy of the RNNT decoder to \n{OmegaConf.to_yaml(self.cfg.decoding)}")
-
+        
         elif decoder_type == 'ctc':
             if not hasattr(self, 'ctc_decoding'):
                 raise ValueError("The model does not have the ctc_decoding module and does not support ctc decoding.")
@@ -503,9 +504,9 @@ class EncDecHybridRNNTCTCBPEModel(EncDecHybridRNNTCTCModel, ASRBPEMixin):
             decoding_cfg = OmegaConf.merge(decoding_cls, decoding_cfg)
 
             if (self.tokenizer_type == "agg" or self.tokenizer_type == "multilingual") and "multisoftmax" in self.cfg.decoder: #CTEMO
-                self.ctc_decoding = CTCBPEDecoding(decoding_cfg=decoding_cfg, tokenizer=self.tokenizer, blank_id=self.ctc_decoder._num_classes//len(self.tokenizer.tokenizers_dict.keys()))
+                self.ctc_decoding = CTCBPEDecoding(decoding_cfg=decoding_cfg, tokenizer=self.tokenizer, blank_id=self.ctc_decoder._num_classes//len(self.tokenizer.tokenizers_dict.keys()), lang_id=lang_id)
             else:
-                self.ctc_decoding = CTCBPEDecoding(decoding_cfg=decoding_cfg, tokenizer=self.tokenizer)
+                self.ctc_decoding = CTCBPEDecoding(decoding_cfg=decoding_cfg, tokenizer=self.tokenizer, lang_id=lang_id)
 
             self.ctc_wer = WER(
                 decoding=self.ctc_decoding,
