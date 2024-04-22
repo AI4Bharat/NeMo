@@ -453,6 +453,7 @@ class ConvASRDecoder(NeuralModule, Exportable, adapter_mixins.AdapterModuleMixin
         self.temperature = 1.0
         self.multisoftmax = multisoftmax
         self.language_masks = language_masks
+    
     @typecheck()
     def forward(self, encoder_output, language_ids=None): #CTEMO
         # Adapter module forward step

@@ -165,7 +165,7 @@ class EncDecHybridRNNTCTCBPEModel(EncDecHybridRNNTCTCModel, ASRBPEMixin):
         )
 
         # setting the RNNT decoder as the default one
-        self.cur_decoder = "rnnt"
+        self.cur_decoder = "ctc"
 
     def _setup_dataloader_from_config(self, config: Optional[Dict]):
 

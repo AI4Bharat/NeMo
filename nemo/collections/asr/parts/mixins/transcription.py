@@ -60,6 +60,7 @@ class TranscribeConfig:
     channel_selector: ChannelSelectorType = None
     augmentor: Optional[DictConfig] = None
     verbose: bool = True
+    logprobs: bool = False
 
     # Utility
     partial_hypothesis: Optional[List[Any]] = None
@@ -194,6 +195,7 @@ class TranscriptionMixin(ABC):
         augmentor: DictConfig = None,
         verbose: bool = True,
         override_config: Optional[TranscribeConfig] = None,
+        logprobs: bool = False,
         **config_kwargs,
     ) -> GenericTranscriptionType:
         """
@@ -242,6 +244,7 @@ class TranscriptionMixin(ABC):
                 channel_selector=channel_selector,
                 augmentor=augmentor,
                 verbose=verbose,
+                logprobs=logprobs,
                 **config_kwargs,
             )
         else:
