@@ -28,11 +28,13 @@ from nemo.collections.asr.losses.rnnt import RNNTLoss
 from nemo.collections.asr.metrics.wer import WER
 from nemo.collections.asr.models.hybrid_rnnt_ctc_models import EncDecHybridRNNTCTCModel
 from nemo.collections.asr.parts.mixins import ASRBPEMixin
+from nemo.core.classes.mixins import AccessMixin
 from nemo.collections.asr.parts.submodules.ctc_decoding import CTCBPEDecoding, CTCBPEDecodingConfig
 from nemo.collections.asr.parts.submodules.rnnt_decoding import RNNTBPEDecoding, RNNTBPEDecodingConfig
 from nemo.collections.common.data.lhotse import get_lhotse_dataloader_from_config
 from nemo.core.classes.common import PretrainedModelInfo
 from nemo.utils import logging, model_utils
+from nemo.collections.asr.data.audio_to_text_dali import DALIOutputs
 
 
 class EncDecHybridRNNTCTCBPEModel(EncDecHybridRNNTCTCModel, ASRBPEMixin):
@@ -651,3 +653,332 @@ class EncDecHybridRNNTCTCBPEModel(EncDecHybridRNNTCTCModel, ASRBPEMixin):
         results.append(model)
 
         return results
+
+class EncDecHybridRNNTCTCBPEModelEWC(EncDecHybridRNNTCTCBPEModel):
+    def __init__(self, cfg: DictConfig, trainer: Trainer = None, cl_params=None):
+        cfg = model_utils.convert_model_config_to_dict_config(cfg)
+        cfg = model_utils.maybe_update_config_version(cfg)
+        super().__init__(cfg=cfg, trainer=trainer)
+
+        assert cl_params is not None,'Parameters are null'
+        self.lda = cl_params['lamda']
+        self.alpha = cl_params['alpha']
+        self.fisher = cl_params['fisher']
+        self.old_params = cl_params['params']
+
+    def training_step(self, batch, batch_nb):
+        # Reset access registry
+        if AccessMixin.is_access_enabled(self.model_guid):
+            AccessMixin.reset_registry(self)
+
+        if self.is_interctc_enabled():
+            AccessMixin.set_access_enabled(access_enabled=True, guid=self.model_guid)
+
+        if "multisoftmax" not in self.cfg.decoder: #CTEMO
+            signal, signal_len, transcript, transcript_len = batch
+            language_ids = None
+        else:
+            signal, signal_len, transcript, transcript_len, sample_ids, language_ids = batch
+
+        # forward() only performs encoder forward
+        if isinstance(batch, DALIOutputs) and batch.has_processed_signal:
+            encoded, encoded_len = self.forward(processed_signal=signal, processed_signal_length=signal_len)
+        else:
+            encoded, encoded_len = self.forward(input_signal=signal, input_signal_length=signal_len)
+        del signal
+
+        # During training, loss must be computed, so decoder forward is necessary
+        decoder, target_length, states = self.decoder(targets=transcript, target_length=transcript_len)
+
+        if hasattr(self, '_trainer') and self._trainer is not None:
+            log_every_n_steps = self._trainer.log_every_n_steps
+            sample_id = self._trainer.global_step
+        else:
+            log_every_n_steps = 1
+            sample_id = batch_nb
+
+        if (sample_id + 1) % log_every_n_steps == 0:
+            compute_wer = True
+        else:
+            compute_wer = False
+
+        # If fused Joint-Loss-WER is not used
+        if not self.joint.fuse_loss_wer:
+            # Compute full joint and loss
+            joint = self.joint(encoder_outputs=encoded, decoder_outputs=decoder, language_ids=language_ids) #CTEMO
+            loss_value = self.loss(
+                log_probs=joint, targets=transcript, input_lengths=encoded_len, target_lengths=target_length
+            )
+
+            # Add auxiliary losses, if registered
+            loss_value = self.add_auxiliary_losses(loss_value)
+
+            tensorboard_logs = {
+                'learning_rate': self._optimizer.param_groups[0]['lr'],
+                'global_step': torch.tensor(self.trainer.global_step, dtype=torch.float32),
+            }
+
+            if compute_wer:
+                self.wer.update(
+                    predictions=encoded,
+                    predictions_lengths=encoded_len,
+                    targets=transcript,
+                    targets_lengths=transcript_len,
+                )
+                _, scores, words = self.wer.compute()
+                self.wer.reset()
+                tensorboard_logs.update({'training_batch_wer': scores.float() / words})
+
+        else:  # If fused Joint-Loss-WER is used
+            # Fused joint step
+            loss_value, wer, _, _ = self.joint(
+                encoder_outputs=encoded,
+                decoder_outputs=decoder,
+                encoder_lengths=encoded_len,
+                transcripts=transcript,
+                transcript_lengths=transcript_len,
+                compute_wer=compute_wer,
+                language_ids=language_ids
+            )
+
+            # Add auxiliary losses, if registered
+            loss_value = self.add_auxiliary_losses(loss_value)
+
+            tensorboard_logs = {
+                'learning_rate': self._optimizer.param_groups[0]['lr'],
+                'global_step': torch.tensor(self.trainer.global_step, dtype=torch.float32),
+            }
+
+            if compute_wer:
+                tensorboard_logs.update({'training_batch_wer': wer})
+
+        if self.ctc_loss_weight > 0:
+            log_probs = self.ctc_decoder(encoder_output=encoded, language_ids=language_ids)
+            ctc_loss = self.ctc_loss(
+                log_probs=log_probs, targets=transcript, input_lengths=encoded_len, target_lengths=transcript_len
+            )
+            tensorboard_logs['train_rnnt_loss'] = loss_value
+            tensorboard_logs['train_ctc_loss'] = ctc_loss
+            loss_value = (1 - self.ctc_loss_weight) * loss_value + self.ctc_loss_weight * ctc_loss
+            if compute_wer:
+                if "multisoftmax" in self.cfg.decoder:
+                    self.ctc_wer.update(
+                        predictions=log_probs,
+                        targets=transcript,
+                        targets_lengths=transcript_len,
+                        predictions_lengths=encoded_len,
+                        lang_ids=language_ids,
+                    )
+                else:
+                    self.ctc_wer.update(
+                        predictions=log_probs,
+                        targets=transcript,
+                        targets_lengths=transcript_len,
+                        predictions_lengths=encoded_len,
+                    )
+                ctc_wer, _, _ = self.ctc_wer.compute()
+                self.ctc_wer.reset()
+                tensorboard_logs.update({'training_batch_wer_ctc': ctc_wer})
+
+        # note that we want to apply interctc independent of whether main ctc
+        # loss is used or not (to allow rnnt + interctc training).
+        # assuming ``ctc_loss_weight=0.3`` and interctc is applied to a single
+        # layer with weight of ``0.1``, the total loss will be
+        # ``loss = 0.9 * (0.3 * ctc_loss + 0.7 * rnnt_loss) + 0.1 * interctc_loss``
+        loss_value, additional_logs = self.add_interctc_losses(
+            loss_value, transcript, transcript_len, compute_wer=compute_wer
+        )
+
+        # EWC related changes
+        for name, param in self.named_parameters():
+            if not param.requires_grad or param.grad is None:
+                continue
+            loss_value += (
+                (
+                    self.fisher[name].to(self.device)
+                    * (self.old_params[name].to(self.device) - param) ** 2
+                )
+                .sum()
+                # .to(self.device)
+                * self.alpha
+                * self.lda
+            )
+
+        tensorboard_logs.update(additional_logs)
+        tensorboard_logs['train_loss'] = loss_value
+        # Reset access registry
+        if AccessMixin.is_access_enabled(self.model_guid):
+            AccessMixin.reset_registry(self)
+
+        # Log items
+        self.log_dict(tensorboard_logs)
+
+        # Preserve batch acoustic model T and language model U parameters if normalizing
+        if self._optim_normalize_joint_txu:
+            self._optim_normalize_txu = [encoded_len.max(), transcript_len.max()]
+
+        return {'loss': loss_value}
+
+class EncDecHybridRNNTCTCBPEModelMAS(EncDecHybridRNNTCTCBPEModel):
+    def __init__(self, cfg: DictConfig, trainer: Trainer = None, cl_params=None):
+        cfg = model_utils.convert_model_config_to_dict_config(cfg)
+        cfg = model_utils.maybe_update_config_version(cfg)
+        super().__init__(cfg=cfg, trainer=trainer)
+
+        assert cl_params is not None,'Parameters are null'
+        self.lda = cl_params['lamda']
+        # self.alpha = cl_params['alpha']
+        self.importance = cl_params['importance']
+        self.old_params = cl_params['params']
+
+    def training_step(self, batch, batch_nb):
+        # Reset access registry
+        if AccessMixin.is_access_enabled(self.model_guid):
+            AccessMixin.reset_registry(self)
+
+        if self.is_interctc_enabled():
+            AccessMixin.set_access_enabled(access_enabled=True, guid=self.model_guid)
+
+        if "multisoftmax" not in self.cfg.decoder: #CTEMO
+            signal, signal_len, transcript, transcript_len = batch
+            language_ids = None
+        else:
+            signal, signal_len, transcript, transcript_len, sample_ids, language_ids = batch
+
+        # forward() only performs encoder forward
+        if isinstance(batch, DALIOutputs) and batch.has_processed_signal:
+            encoded, encoded_len = self.forward(processed_signal=signal, processed_signal_length=signal_len)
+        else:
+            encoded, encoded_len = self.forward(input_signal=signal, input_signal_length=signal_len)
+        del signal
+
+        # During training, loss must be computed, so decoder forward is necessary
+        decoder, target_length, states = self.decoder(targets=transcript, target_length=transcript_len)
+
+        if hasattr(self, '_trainer') and self._trainer is not None:
+            log_every_n_steps = self._trainer.log_every_n_steps
+            sample_id = self._trainer.global_step
+        else:
+            log_every_n_steps = 1
+            sample_id = batch_nb
+
+        if (sample_id + 1) % log_every_n_steps == 0:
+            compute_wer = True
+        else:
+            compute_wer = False
+
+        # If fused Joint-Loss-WER is not used
+        if not self.joint.fuse_loss_wer:
+            # Compute full joint and loss
+            joint = self.joint(encoder_outputs=encoded, decoder_outputs=decoder, language_ids=language_ids) #CTEMO
+            loss_value = self.loss(
+                log_probs=joint, targets=transcript, input_lengths=encoded_len, target_lengths=target_length
+            )
+
+            # Add auxiliary losses, if registered
+            loss_value = self.add_auxiliary_losses(loss_value)
+
+            tensorboard_logs = {
+                'learning_rate': self._optimizer.param_groups[0]['lr'],
+                'global_step': torch.tensor(self.trainer.global_step, dtype=torch.float32),
+            }
+
+            if compute_wer:
+                self.wer.update(
+                    predictions=encoded,
+                    predictions_lengths=encoded_len,
+                    targets=transcript,
+                    targets_lengths=transcript_len,
+                )
+                _, scores, words = self.wer.compute()
+                self.wer.reset()
+                tensorboard_logs.update({'training_batch_wer': scores.float() / words})
+
+        else:  # If fused Joint-Loss-WER is used
+            # Fused joint step
+            loss_value, wer, _, _ = self.joint(
+                encoder_outputs=encoded,
+                decoder_outputs=decoder,
+                encoder_lengths=encoded_len,
+                transcripts=transcript,
+                transcript_lengths=transcript_len,
+                compute_wer=compute_wer,
+                language_ids=language_ids
+            )
+
+            # Add auxiliary losses, if registered
+            loss_value = self.add_auxiliary_losses(loss_value)
+
+            tensorboard_logs = {
+                'learning_rate': self._optimizer.param_groups[0]['lr'],
+                'global_step': torch.tensor(self.trainer.global_step, dtype=torch.float32),
+            }
+
+            if compute_wer:
+                tensorboard_logs.update({'training_batch_wer': wer})
+
+        if self.ctc_loss_weight > 0:
+            log_probs = self.ctc_decoder(encoder_output=encoded, language_ids=language_ids)
+            ctc_loss = self.ctc_loss(
+                log_probs=log_probs, targets=transcript, input_lengths=encoded_len, target_lengths=transcript_len
+            )
+            tensorboard_logs['train_rnnt_loss'] = loss_value
+            tensorboard_logs['train_ctc_loss'] = ctc_loss
+            loss_value = (1 - self.ctc_loss_weight) * loss_value + self.ctc_loss_weight * ctc_loss
+            if compute_wer:
+                if "multisoftmax" in self.cfg.decoder:
+                    self.ctc_wer.update(
+                        predictions=log_probs,
+                        targets=transcript,
+                        targets_lengths=transcript_len,
+                        predictions_lengths=encoded_len,
+                        lang_ids=language_ids,
+                    )
+                else:
+                    self.ctc_wer.update(
+                        predictions=log_probs,
+                        targets=transcript,
+                        targets_lengths=transcript_len,
+                        predictions_lengths=encoded_len,
+                    )
+                ctc_wer, _, _ = self.ctc_wer.compute()
+                self.ctc_wer.reset()
+                tensorboard_logs.update({'training_batch_wer_ctc': ctc_wer})
+
+        # note that we want to apply interctc independent of whether main ctc
+        # loss is used or not (to allow rnnt + interctc training).
+        # assuming ``ctc_loss_weight=0.3`` and interctc is applied to a single
+        # layer with weight of ``0.1``, the total loss will be
+        # ``loss = 0.9 * (0.3 * ctc_loss + 0.7 * rnnt_loss) + 0.1 * interctc_loss``
+        loss_value, additional_logs = self.add_interctc_losses(
+            loss_value, transcript, transcript_len, compute_wer=compute_wer
+        )
+
+        # EWC related changes
+        for name, param in self.named_parameters():
+            if not param.requires_grad or param.grad is None:
+                continue
+            loss_value += (
+                (
+                    self.importance[name].to(self.device)
+                    * (self.old_params[name].to(self.device) - param) ** 2
+                )
+                .sum()
+                # .to(self.device)
+                * self.lda
+            )
+
+        tensorboard_logs.update(additional_logs)
+        tensorboard_logs['train_loss'] = loss_value
+        # Reset access registry
+        if AccessMixin.is_access_enabled(self.model_guid):
+            AccessMixin.reset_registry(self)
+
+        # Log items
+        self.log_dict(tensorboard_logs)
+
+        # Preserve batch acoustic model T and language model U parameters if normalizing
+        if self._optim_normalize_joint_txu:
+            self._optim_normalize_txu = [encoded_len.max(), transcript_len.max()]
+
+        return {'loss': loss_value}
