@@ -655,12 +655,12 @@ class EncDecHybridRNNTCTCBPEModel(EncDecHybridRNNTCTCModel, ASRBPEMixin):
         return results
 
 class EncDecHybridRNNTCTCBPEModelEWC(EncDecHybridRNNTCTCBPEModel):
-    def __init__(self, cfg: DictConfig, trainer: Trainer = None, cl_params=None):
+    def __init__(self, cfg: DictConfig, trainer: Trainer = None):
         cfg = model_utils.convert_model_config_to_dict_config(cfg)
         cfg = model_utils.maybe_update_config_version(cfg)
         super().__init__(cfg=cfg, trainer=trainer)
-
-        assert cl_params is not None,'Parameters are null'
+    
+    def set_cl_params(self,cl_params):
         self.lda = cl_params['lamda']
         self.alpha = cl_params['alpha']
         self.fisher = cl_params['fisher']
@@ -791,7 +791,7 @@ class EncDecHybridRNNTCTCBPEModelEWC(EncDecHybridRNNTCTCBPEModel):
 
         # EWC related changes
         for name, param in self.named_parameters():
-            if not param.requires_grad or param.grad is None:
+            if not param.requires_grad or param.grad is None or name not in self.fisher:
                 continue
             loss_value += (
                 (
@@ -820,15 +820,15 @@ class EncDecHybridRNNTCTCBPEModelEWC(EncDecHybridRNNTCTCBPEModel):
         return {'loss': loss_value}
 
 class EncDecHybridRNNTCTCBPEModelMAS(EncDecHybridRNNTCTCBPEModel):
-    def __init__(self, cfg: DictConfig, trainer: Trainer = None, cl_params=None):
+    def __init__(self, cfg: DictConfig, trainer: Trainer = None):
         cfg = model_utils.convert_model_config_to_dict_config(cfg)
         cfg = model_utils.maybe_update_config_version(cfg)
         super().__init__(cfg=cfg, trainer=trainer)
-
-        assert cl_params is not None,'Parameters are null'
+    
+    def set_cl_params(self,cl_params):
         self.lda = cl_params['lamda']
         # self.alpha = cl_params['alpha']
-        self.importance = cl_params['importance']
+        self.importance = cl_params['mas_importance']
         self.old_params = cl_params['params']
 
     def training_step(self, batch, batch_nb):
@@ -956,7 +956,7 @@ class EncDecHybridRNNTCTCBPEModelMAS(EncDecHybridRNNTCTCBPEModel):
 
         # EWC related changes
         for name, param in self.named_parameters():
-            if not param.requires_grad or param.grad is None:
+            if not param.requires_grad or param.grad is None or name not in self.importance:
                 continue
             loss_value += (
                 (
