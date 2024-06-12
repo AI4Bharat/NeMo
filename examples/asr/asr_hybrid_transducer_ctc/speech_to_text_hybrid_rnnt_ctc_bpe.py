@@ -92,9 +92,9 @@ def compute_ewc_params(model, dataloader,device):
         model.zero_grad()
         nb += 1
         # loss.detach().cpu()
-        if e == 5:
-            del cuda_batch, model, loss
-            break
+        # if e == 5:
+        #     del cuda_batch, model, loss
+        #     break
 
     for name in fisher:
         fisher[name] /= nb
@@ -124,9 +124,9 @@ def compute_mas_params(model, dataloader,device):
         model.zero_grad()
         nb += 1
         # loss.detach().cpu()
-        if e == 5:
-            del cuda_batch, model, loss
-            break
+        # if e == 5:
+        #     del cuda_batch, model, loss
+        #     break
 
     for name in importance:
         importance[name] /= nb
@@ -142,7 +142,7 @@ def main(cfg):
     torch.set_float32_matmul_precision("medium")
     
     cl_config = cfg.get('continual_learning_strategy',None)
-
+    
     if cl_config is None:
         trainer = pl.Trainer(**cfg.trainer)
         exp_manager(trainer, cfg.get("exp_manager", None))
@@ -154,12 +154,13 @@ def main(cfg):
 
     elif cl_config.name == 'EWC':
         # EWC Related things
-        log_dir = cfg.exp_manager.explicit_log_dir
+        log_dir = f'{cfg.exp_manager.explicit_log_dir}/checkpoints'
+        os.makedirs(log_dir,exist_ok=True)
         if not os.path.exists(f'{log_dir}/ewc.pkl'):
             # load the previous checkpoint with the old dataloader
             prev_cfg = OmegaConf.load(cl_config.ewc_params.old_config)
             trainer = pl.Trainer(**cfg.trainer)
-            prev_cfg.model.train_ds.batch_size = 16
+            # prev_cfg.model.train_ds.batch_size = 16
             
             ## model contains dataset, this means that this line has loaded all the data of the previous episode
             asr_model_old = EncDecHybridRNNTCTCBPEModel(cfg=prev_cfg.model, trainer=trainer) 
@@ -173,12 +174,11 @@ def main(cfg):
             params, fisher = compute_ewc_params(asr_model_old,asr_model_old._train_dl,device)
 
             ## load the old params (if applicable)
-            old_param_path = f"{os.path.abspath(os.path.join(log_dir,'..'))}/{os.path.split(cl_config.ewc_params.old_config)[-1].split('.')[0]}/ewc.pkl"
-            breakpoint()
-            if not ('ep0' in old_param_path and 'full_finetune' in old_param_path):
+            old_param_path = f"{os.path.abspath(os.path.join(log_dir,'../../'))}/{os.path.split(cl_config.ewc_params.old_config)[-1].split('.')[0]}/checkpoints/ewc.pkl"
+            if 'full_finetune' not in old_param_path:
                 assert os.path.exists(old_param_path),'Old param path is required'
                 
-                with open(f'{log_dir}/ewc.pkl','rb') as reader:
+                with open(f'{old_param_path}','rb') as reader:
                     saved = pickle.load(reader)
                 old_fisher = saved['fisher']
                 
@@ -214,6 +214,8 @@ def main(cfg):
             }
 
         trainer = pl.Trainer(**cfg.trainer)
+        exp_manager(trainer, cfg.get("exp_manager", None))
+        
         asr_model = EncDecHybridRNNTCTCBPEModelEWC(cfg=cfg.model, trainer=trainer) 
         asr_model.maybe_init_from_pretrained_checkpoint(cfg)
         
@@ -224,12 +226,13 @@ def main(cfg):
         
     elif cl_config.name == 'MAS':
         # MAS Related things
-        log_dir = cfg.exp_manager.explicit_log_dir
+        log_dir = f'{cfg.exp_manager.explicit_log_dir}/checkpoints'
+        os.makedirs(log_dir,exist_ok=True)
         if not os.path.exists(f'{log_dir}/mas.pkl'):
             # load the previous checkpoint with the old dataloader
             prev_cfg = OmegaConf.load(cl_config.mas_params.old_config)
             trainer = pl.Trainer(**cfg.trainer)
-            prev_cfg.model.train_ds.batch_size = 16
+            # prev_cfg.model.train_ds.batch_size = 16
             
             ## model contains dataset, this means that this line has loaded all the data of the previous episode
             asr_model_old = EncDecHybridRNNTCTCBPEModel(cfg=prev_cfg.model, trainer=trainer) 
@@ -243,11 +246,11 @@ def main(cfg):
             params, mas_importance = compute_mas_params(asr_model_old,asr_model_old._train_dl,device)
 
             ## load the old params (if applicable)
-            old_param_path = f"{os.path.abspath(os.path.join(log_dir,'..'))}/{os.path.split(cl_config.mas_params.old_config)[-1].split('.')[0]}/mas.pkl"
-            if not ('ep0' in old_param_path and 'full_finetune' in old_param_path):
+            old_param_path = f"{os.path.abspath(os.path.join(log_dir,'../../'))}/{os.path.split(cl_config.mas_params.old_config)[-1].split('.')[0]}/checkpoints/mas.pkl"
+            if 'full_finetune' not in old_param_path:
                 assert os.path.exists(old_param_path),'Old param path is required'
                 
-                with open(f'{log_dir}/mas.pkl','rb') as reader:
+                with open(old_param_path,'rb') as reader:
                     saved = pickle.load(reader)
                 old_mas_importance = saved['mas_importance']
                 
@@ -283,6 +286,7 @@ def main(cfg):
             }
 
         trainer = pl.Trainer(**cfg.trainer)
+        exp_manager(trainer, cfg.get("exp_manager", None))
         asr_model = EncDecHybridRNNTCTCBPEModelMAS(cfg=cfg.model, trainer=trainer) 
         asr_model.maybe_init_from_pretrained_checkpoint(cfg)
         
