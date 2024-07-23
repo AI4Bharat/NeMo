@@ -133,6 +133,10 @@ class EncDecHybridRNNTCTCBPEModel(EncDecHybridRNNTCTCModel, ASRBPEMixin):
             self.joint.offset_token_ids_by_token_id = self.offset_token_ids_by_token_id
             self.ctc_decoder.language_masks = self.language_masks
 
+            # Create language embeddings
+            language_list = self.tokenizer.tokenizers_dict.keys()
+            self.encoder.add_language_embeddings(language_list)
+
         # Setup wer object
         self.wer = WER(
             decoding=self.decoding,

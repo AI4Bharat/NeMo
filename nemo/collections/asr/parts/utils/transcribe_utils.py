@@ -250,6 +250,8 @@ def setup_model(cfg: DictConfig, map_location: torch.device) -> Tuple[ASRModel, 
         logging.info(f"Restoring model : {imported_class.__name__}")
         asr_model = imported_class.restore_from(
             restore_path=cfg.model_path, map_location=map_location,
+            # FIXME: Kaushal, added for debugging multi-langid
+            strict=False,
         )  # type: ASRModel
         model_name = os.path.splitext(os.path.basename(cfg.model_path))[0]
     else:

@@ -168,11 +168,11 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin):
             return super()._transcribe_forward(batch, trcfg)
 
         # CTC Path
-        encoded, encoded_len = self.forward(input_signal=batch[0], input_signal_length=batch[1])
         if "multisoftmax" not in self.cfg.decoder:
             language_ids = None
         else:
             language_ids = [trcfg.language_id] * len(batch[0])
+        encoded, encoded_len = self.forward(input_signal=batch[0], input_signal_length=batch[1], language_ids=language_ids)
         logits = self.ctc_decoder(encoder_output=encoded, language_ids=language_ids)
         output = dict(logits=logits, encoded_len=encoded_len, language_ids=language_ids)
         

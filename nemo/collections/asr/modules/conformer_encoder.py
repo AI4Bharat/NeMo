@@ -46,7 +46,7 @@ from nemo.core.classes.common import typecheck
 from nemo.core.classes.exportable import Exportable
 from nemo.core.classes.mixins import AccessMixin, adapter_mixins
 from nemo.core.classes.module import NeuralModule
-from nemo.core.neural_types import AcousticEncodedRepresentation, ChannelType, LengthsType, NeuralType, SpectrogramType
+from nemo.core.neural_types import AcousticEncodedRepresentation, ChannelType, LengthsType, NeuralType, SpectrogramType, StringType
 from nemo.utils import logging
 
 __all__ = ['ConformerEncoder']
@@ -200,6 +200,7 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
                 "cache_last_channel": NeuralType(('D', 'B', 'T', 'D'), ChannelType(), optional=True),
                 "cache_last_time": NeuralType(('D', 'B', 'D', 'T'), ChannelType(), optional=True),
                 "cache_last_channel_len": NeuralType(tuple('B'), LengthsType(), optional=True),
+                'language_ids': [NeuralType(('B'), StringType(), optional=True)], # CTEMO
             }
         )
 
@@ -213,6 +214,7 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
                 "cache_last_channel": NeuralType(('B', 'D', 'T', 'D'), ChannelType(), optional=True),
                 "cache_last_time": NeuralType(('B', 'D', 'D', 'T'), ChannelType(), optional=True),
                 "cache_last_channel_len": NeuralType(tuple('B'), LengthsType(), optional=True),
+                'language_ids': [NeuralType(('B'), StringType(), optional=True)], # CTEMO
             }
         )
 
@@ -445,6 +447,14 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
         # will be set in self.forward() if defined in AccessMixin config
         self.interctc_capture_at_layers = None
 
+        # Add language id embedding to network
+        self.language_embeddings = None
+    
+    def add_language_embeddings(self, language_list):
+        self.language_to_idx = {language: idx for idx, language in enumerate(language_list)}
+        num_languages = len(language_list)
+        self.language_embeddings = nn.Embedding(num_languages, self.d_model, max_norm=True)
+
     def forward_for_export(
         self, audio_signal, length, cache_last_channel=None, cache_last_time=None, cache_last_channel_len=None
     ):
@@ -493,7 +503,7 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
 
     @typecheck()
     def forward(
-        self, audio_signal, length, cache_last_channel=None, cache_last_time=None, cache_last_channel_len=None
+        self, audio_signal, length, cache_last_channel=None, cache_last_time=None, cache_last_channel_len=None, language_ids=None,
     ):
         return self.forward_internal(
             audio_signal,
@@ -501,10 +511,11 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
             cache_last_channel=cache_last_channel,
             cache_last_time=cache_last_time,
             cache_last_channel_len=cache_last_channel_len,
+            language_ids=language_ids,
         )
 
     def forward_internal(
-        self, audio_signal, length, cache_last_channel=None, cache_last_time=None, cache_last_channel_len=None
+        self, audio_signal, length, cache_last_channel=None, cache_last_time=None, cache_last_channel_len=None, language_ids=None,
     ):
         self.update_max_seq_length(seq_length=audio_signal.size(2), device=audio_signal.device)
 
@@ -549,6 +560,12 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
             offset = None
 
         audio_signal, pos_emb = self.pos_enc(x=audio_signal, cache_len=cache_len)
+        # breakpoint()
+        if language_ids is not None:
+            language_ints = torch.tensor([self.language_to_idx[language] for language in language_ids], device=audio_signal.device)
+            language_inputs = self.language_embeddings(language_ints).unsqueeze(1).repeat(1, 32, 1)
+            audio_signal = torch.cat((language_inputs, audio_signal), 1)
+        # breakpoint()
 
         # Create the self-attention and padding masks
         pad_mask, att_mask = self._create_masks(

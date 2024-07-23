@@ -43,7 +43,7 @@ from nemo.collections.common.data.lhotse import get_lhotse_dataloader_from_confi
 from nemo.collections.common.parts.preprocessing.parsers import make_parser
 from nemo.core.classes.common import PretrainedModelInfo, typecheck
 from nemo.core.classes.mixins import AccessMixin
-from nemo.core.neural_types import AcousticEncodedRepresentation, AudioSignal, LengthsType, NeuralType, SpectrogramType
+from nemo.core.neural_types import AcousticEncodedRepresentation, AudioSignal, LengthsType, NeuralType, SpectrogramType, StringType
 from nemo.utils import logging
 
 
@@ -586,6 +586,7 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
             "input_signal_length": NeuralType(tuple('B'), LengthsType(), optional=True),
             "processed_signal": NeuralType(('B', 'D', 'T'), SpectrogramType(), optional=True),
             "processed_signal_length": NeuralType(tuple('B'), LengthsType(), optional=True),
+            'language_ids': [NeuralType(('B'), StringType(), optional=True)], # CTEMO
         }
 
     @property
@@ -644,7 +645,7 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
         if self.spec_augmentation is not None and self.training:
             processed_signal = self.spec_augmentation(input_spec=processed_signal, length=processed_signal_length)
 
-        encoded, encoded_len = self.encoder(audio_signal=processed_signal, length=processed_signal_length)
+        encoded, encoded_len = self.encoder(audio_signal=processed_signal, length=processed_signal_length, language_ids=language_ids)
         return encoded, encoded_len
 
     # PTL-specific methods
@@ -873,7 +874,13 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
     """ Transcription related methods """
 
     def _transcribe_forward(self, batch: Any, trcfg: TranscribeConfig):
-        encoded, encoded_len = self.forward(input_signal=batch[0], input_signal_length=batch[1])
+        # CTC Path
+        if "multisoftmax" not in self.cfg.decoder:
+            language_ids = None
+        else:
+            language_ids = [trcfg.language_id] * len(batch[0])
+        encoded, encoded_len = self.forward(input_signal=batch[0], input_signal_length=batch[1], language_ids=language_ids)
+        # encoded, encoded_len = self.forward(input_signal=batch[0], input_signal_length=batch[1])
         output = dict(encoded=encoded, encoded_len=encoded_len)
         return output
 
