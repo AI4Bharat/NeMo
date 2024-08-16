@@ -15,6 +15,8 @@
 import copy
 import os
 from typing import Dict, List, Optional, Union
+import re
+from collections import defaultdict
 
 import torch
 from omegaconf import DictConfig, ListConfig, OmegaConf, open_dict
@@ -101,30 +103,46 @@ class EncDecHybridRNNTCTCBPEModel(EncDecHybridRNNTCTCModel, ASRBPEMixin):
 
         # Multisoftmax #CTEMO
         self.language_masks = None
+        # Regex pattern for language token (eg. <hi> )
+        # langid_pattern = re.compile(r"<.{2}>")
         if (self.tokenizer_type == "agg" or self.tokenizer_type == "multilingual") and "multisoftmax" in cfg.decoder:
             logging.info("Creating masks for multi-softmax layer.")
-            self.language_masks = {}
+            self.language_masks = defaultdict(list)
             self.token_id_offsets = self.tokenizer.token_id_offset
             self.offset_token_ids_by_token_id = self.tokenizer.offset_token_ids_by_token_id
+            num_languages = len(self.tokenizer.tokenizers_dict.keys())
             for language in self.tokenizer.tokenizers_dict.keys():
-                self.language_masks[language] = [(token_language == language)  for _, token_language in self.tokenizer.langs_by_token_id.items()]
+                for token_id, token_language in self.tokenizer.langs_by_token_id.items():
+                    self.language_masks[language].append(token_language == language)
+                    # token = self.tokenizer.ids_to_tokens([token_id])[0]
+                    # Set the mask to true if it is a language token as each output should have all language tokens
+                    # if langid_pattern.search(token):
+                    if token_id >= self.token_id_offsets["<lang_code>"]:
+                        self.language_masks[language][-1] = True
+                # self.language_masks[language] = [((token_language == language) or ('<' in token))  for token, token_language in self.tokenizer.langs_by_token_id.items()]
+                # Insert lang id tokens at the end
+                # self.language_masks[language].extend([True]*num_languages)
                 self.language_masks[language].append(True) # Insert blank token
+            # breakpoint()
+            num_classes=self.ctc_decoder._num_classes // len(self.tokenizer.tokenizers_dict.keys()) + num_languages
+            # breakpoint()
             self.ctc_loss = CTCLoss(
-                num_classes=self.ctc_decoder._num_classes // len(self.tokenizer.tokenizers_dict.keys()),
+                num_classes=self.ctc_decoder._num_classes // len(self.tokenizer.tokenizers_dict.keys()) + num_languages - 1,
                 zero_infinity=True,
                 reduction=self.cfg.aux_ctc.get("ctc_reduction", "mean_batch"),
             )
             # Setup RNNT Loss
             loss_name, loss_kwargs = self.extract_rnnt_loss_cfg(self.cfg.get("loss", None))
             self.loss = RNNTLoss(
-                num_classes=self.ctc_decoder._num_classes // len(self.tokenizer.tokenizers_dict.keys()),
+                # num_classes=self.ctc_decoder._num_classes // len(self.tokenizer.tokenizers_dict.keys()),
+                num_classes=self.ctc_decoder._num_classes // len(self.tokenizer.tokenizers_dict.keys()) + num_languages - 1,
                 loss_name=loss_name,
                 loss_kwargs=loss_kwargs,
                 reduction=self.cfg.get("rnnt_reduction", "mean_batch"),
             )
             # Setup decoding object
             self.decoding = RNNTBPEDecoding(
-                decoding_cfg=self.cfg.decoding, decoder=self.decoder, joint=self.joint, tokenizer=self.tokenizer, blank_id=self.ctc_decoder._num_classes // len(self.tokenizer.tokenizers_dict.keys())
+                decoding_cfg=self.cfg.decoding, decoder=self.decoder, joint=self.joint, tokenizer=self.tokenizer, blank_id=self.ctc_decoder._num_classes // len(self.tokenizer.tokenizers_dict.keys()) + num_languages - 1
             )
             
             self.decoder.language_masks = self.language_masks
@@ -158,7 +176,7 @@ class EncDecHybridRNNTCTCBPEModel(EncDecHybridRNNTCTCModel, ASRBPEMixin):
             with open_dict(self.cfg.aux_ctc):
                 self.cfg.aux_ctc.decoding = ctc_decoding_cfg
         if (self.tokenizer_type == "agg" or self.tokenizer_type == "multilingual") and "multisoftmax" in cfg.decoder: #CTEMO
-            self.ctc_decoding = CTCBPEDecoding(self.cfg.aux_ctc.decoding, tokenizer=self.tokenizer, blank_id=self.ctc_decoder._num_classes//len(self.tokenizer.tokenizers_dict.keys()))
+            self.ctc_decoding = CTCBPEDecoding(self.cfg.aux_ctc.decoding, tokenizer=self.tokenizer, blank_id=self.ctc_decoder._num_classes//len(self.tokenizer.tokenizers_dict.keys()) + num_languages - 1) # -1 becuase it is 0 indexed
         else:
             self.ctc_decoding = CTCBPEDecoding(self.cfg.aux_ctc.decoding, tokenizer=self.tokenizer)
 

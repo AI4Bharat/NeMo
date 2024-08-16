@@ -478,9 +478,12 @@ class ConvASRDecoder(NeuralModule, Exportable, adapter_mixins.AdapterModuleMixin
             # Send mask to GPU
             mask = mask.to(decoder_output.device)
             # masked_output = self.masked_softmax(decoder_output, mask) # B x T x 3073 -> B x T x 257
+            # breakpoint()
             decoder_output = torch.masked_select(decoder_output, mask).view(decoder_output.shape[0],decoder_output.shape[1],-1)
 
             del mask
+        
+        # breakpoint()
         # print(mask[0][0])
         # softmax_output = self.masked_softmax(decoder_output, mask)
         # return softmax_output

@@ -53,9 +53,16 @@ class MultilingualTokenizer(TokenizerSpec):
             self.token_id_offset_by_tokenizer_num[i] = offset
             offset += len(tokenizer.vocab)
             i += 1
+        # FIX: kaushal - Set the offset of the language code tokens
+        self.token_id_offset["<lang_code>"] = offset
 
         for tokenizer in self.tokenizers_dict.values():
             self.vocabulary.extend(tokenizer.vocab)
+        
+        for lang in self.tokenizers_dict.keys():
+            self.vocabulary.append(f"<{lang}>")
+        
+        print(self.vocabulary)
 
         self.vocab_size = len(self.vocabulary)
         logging.info(f'Aggregate vocab size: {self.vocab_size}')
@@ -101,6 +108,9 @@ class MultilingualTokenizer(TokenizerSpec):
     def text_to_ids(self, text, lang_id):
         tokenizer = self.tokenizers_dict[lang_id]
         token_ids = tokenizer.text_to_ids(text)
+        lang_token_index = self.vocabulary.index(f"<{lang_id}>")
+        # Insert language token at index 0 to the list of tokens
+        token_ids = [lang_token_index] + token_ids
         # token_ids[:] = [t + self.token_id_offset[lang_id] for t in token_ids]
 
         return token_ids
@@ -122,7 +132,10 @@ class MultilingualTokenizer(TokenizerSpec):
             # tokenizer = self.tokenizers_by_token_id[id]
             tokenizer = self.tokenizers_dict[lang]
             # tokens.extend(tokenizer.ids_to_tokens([offset_id]))
-            tokens.extend(tokenizer.ids_to_tokens([id]))
+            if id >= self.token_id_offset["<lang_code>"]:
+                tokens.append(self.vocabulary[id]+' ')
+            else:
+                tokens.extend(tokenizer.ids_to_tokens([id]))
         text = ''.join(tokens).replace('▁', ' ')
 
         return text

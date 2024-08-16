@@ -561,10 +561,10 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
 
         audio_signal, pos_emb = self.pos_enc(x=audio_signal, cache_len=cache_len)
         # breakpoint()
-        if language_ids is not None:
-            language_ints = torch.tensor([self.language_to_idx[language] for language in language_ids], device=audio_signal.device)
-            language_inputs = self.language_embeddings(language_ints).unsqueeze(1).repeat(1, 32, 1)
-            audio_signal = torch.cat((language_inputs, audio_signal), 1)
+        # if language_ids is not None:
+        #     language_ints = torch.tensor([self.language_to_idx[language] for language in language_ids], device=audio_signal.device)
+        #     language_inputs = self.language_embeddings(language_ints).unsqueeze(1).repeat(1, 32, 1)
+        #     audio_signal = torch.cat((language_inputs, audio_signal), 1)
         # breakpoint()
 
         # Create the self-attention and padding masks
