@@ -133,11 +133,13 @@ class MultilingualTokenizer(TokenizerSpec):
             tokenizer = self.tokenizers_dict[lang]
             # tokens.extend(tokenizer.ids_to_tokens([offset_id]))
             if id >= len(tokenizer.vocab):
-                try:
-                    tokens.append(self.vocabulary[id-len(tokenizer.vocab)+self.token_id_offset["<lang_code>"]]+' ')
-                except IndexError:
-                    print("Index error occured")
-                    breakpoint()
+                vocab_id = id-len(tokenizer.vocab)+self.token_id_offset["<lang_code>"] 
+                if vocab_id < len(self.vocabulary):
+                    tokens.append(self.vocabulary[vocab_id])
+                else: # ignore any index greater than vocab size
+                    pass
+                    # print("Index error occured")
+                    # breakpoint()
             else:
                 tokens.extend(tokenizer.ids_to_tokens([id]))
         text = ''.join(tokens).replace('▁', ' ')
