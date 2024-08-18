@@ -100,7 +100,11 @@ def _speech_collate_fn(batch, pad_id):
         tokens.append(tokens_i)
 
     if has_audio:
-        audio_signal = torch.stack(audio_signal)
+        try:
+            audio_signal = torch.stack(audio_signal)
+        except RuntimeError:
+            print("audio signal problem")
+            breakpoint()
         audio_lengths = torch.stack(audio_lengths)
     else:
         audio_signal, audio_lengths = None, None

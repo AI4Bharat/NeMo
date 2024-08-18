@@ -1609,7 +1609,7 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
             res = torch.stack(res_single)
         else:
             res = self.joint_net(inp)  # [B, T, U, V + 1]
-
+        
         del inp
 
         if self.preserve_memory:
@@ -1662,7 +1662,7 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
             final_layer = torch.nn.ModuleDict()
             logging.info(f"Vocab size for each language: {self._vocab_size // len(self.language_keys)}")
             for lang in self.language_keys:
-                final_layer[lang] = torch.nn.Linear(joint_n_hidden, (self._vocab_size // len(self.language_keys)+1))
+                final_layer[lang] = torch.nn.Linear(joint_n_hidden, ((self._vocab_size)//len(self.language_keys) + 1 + len(self.language_keys)))
             layers = (
                 [activation]
                 + ([torch.nn.Dropout(p=dropout)] if dropout else [])

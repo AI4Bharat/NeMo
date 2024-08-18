@@ -108,7 +108,7 @@ class MultilingualTokenizer(TokenizerSpec):
     def text_to_ids(self, text, lang_id):
         tokenizer = self.tokenizers_dict[lang_id]
         token_ids = tokenizer.text_to_ids(text)
-        lang_token_index = self.vocabulary.index(f"<{lang_id}>")
+        lang_token_index = self.vocabulary.index(f"<{lang_id}>") - self.token_id_offset["<lang_code>"] + len(tokenizer.vocab)
         # Insert language token at index 0 to the list of tokens
         token_ids = [lang_token_index] + token_ids
         # token_ids[:] = [t + self.token_id_offset[lang_id] for t in token_ids]
@@ -132,8 +132,12 @@ class MultilingualTokenizer(TokenizerSpec):
             # tokenizer = self.tokenizers_by_token_id[id]
             tokenizer = self.tokenizers_dict[lang]
             # tokens.extend(tokenizer.ids_to_tokens([offset_id]))
-            if id >= self.token_id_offset["<lang_code>"]:
-                tokens.append(self.vocabulary[id]+' ')
+            if id >= len(tokenizer.vocab):
+                try:
+                    tokens.append(self.vocabulary[id-len(tokenizer.vocab)+self.token_id_offset["<lang_code>"]]+' ')
+                except IndexError:
+                    print("Index error occured")
+                    breakpoint()
             else:
                 tokens.extend(tokenizer.ids_to_tokens([id]))
         text = ''.join(tokens).replace('▁', ' ')
@@ -148,10 +152,13 @@ class MultilingualTokenizer(TokenizerSpec):
         tokens = []
 
         for id in ids:
-            offset_id = self.offset_token_ids_by_token_id[id]
-            tokenizer = self.tokenizers_by_token_id[id]
-            token = tokenizer.ids_to_tokens([offset_id])[0]
-            tokens.append(token)
+            if id >= self.token_id_offset["<lang_code>"]:
+                tokens.append(self.vocabulary[id]+' ')
+            else:
+                offset_id = self.offset_token_ids_by_token_id[id]
+                tokenizer = self.tokenizers_by_token_id[id]
+                token = tokenizer.ids_to_tokens([offset_id])[0]
+                tokens.append(token)
 
         return tokens
 

@@ -124,7 +124,6 @@ class EncDecHybridRNNTCTCBPEModel(EncDecHybridRNNTCTCModel, ASRBPEMixin):
                 # self.language_masks[language].extend([True]*num_languages)
                 self.language_masks[language].append(True) # Insert blank token
             # breakpoint()
-            num_classes=self.ctc_decoder._num_classes // len(self.tokenizer.tokenizers_dict.keys()) + num_languages
             # breakpoint()
             self.ctc_loss = CTCLoss(
                 num_classes=self.ctc_decoder._num_classes // len(self.tokenizer.tokenizers_dict.keys()) + num_languages - 1,
