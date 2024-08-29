@@ -547,6 +547,8 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
             raise ValueError("Caching with reduction feature is not supported yet!")
 
         max_audio_length = audio_signal.size(1)
+        if language_ids is not None:
+            max_audio_length = max_audio_length + 32
         if cache_last_channel is not None:
             cache_len = self.streaming_cfg.last_channel_cache_size
             cache_keep_size = max_audio_length - self.streaming_cfg.cache_drop_size
