@@ -77,7 +77,7 @@ To install NeMo on Mac with Apple M-Series GPU:
     pip install cython
 
     # clone the repo and install in development mode
-    git clone https://github.com/NVIDIA/NeMo
+    git clone https://github.com/AI4Bharat/NeMo.git
     cd NeMo
     pip install 'nemo_toolkit[all]'
 
