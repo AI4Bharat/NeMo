@@ -484,6 +484,8 @@ class ConvASRDecoder(NeuralModule, Exportable, adapter_mixins.AdapterModuleMixin
         # print(mask[0][0])
         # softmax_output = self.masked_softmax(decoder_output, mask)
         # return softmax_output
+        # for onnx Tahir
+        # return decoder_output
         return torch.nn.functional.log_softmax(decoder_output, dim=-1)
 
     def input_example(self, max_batch=1, max_dim=256):

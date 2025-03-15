@@ -185,7 +185,7 @@ class Exportable(ABC):
                 for ex in exportables:
                     ex._prepare_for_export(**my_args, noreplace=True)
                 self._prepare_for_export(output=output, input_example=input_example, **my_args)
-
+                print(input_example)
                 input_list, input_dict = parse_input_example(input_example)
                 input_names = self.input_names
                 output_names = self.output_names

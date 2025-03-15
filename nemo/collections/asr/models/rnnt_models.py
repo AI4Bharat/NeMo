@@ -43,7 +43,7 @@ from nemo.collections.common.data.lhotse import get_lhotse_dataloader_from_confi
 from nemo.collections.common.parts.preprocessing.parsers import make_parser
 from nemo.core.classes.common import PretrainedModelInfo, typecheck
 from nemo.core.classes.mixins import AccessMixin
-from nemo.core.neural_types import AcousticEncodedRepresentation, AudioSignal, LengthsType, NeuralType, SpectrogramType
+from nemo.core.neural_types import AcousticEncodedRepresentation, AudioSignal, LengthsType, NeuralType, SpectrogramType, StringType
 from nemo.utils import logging
 
 
@@ -586,6 +586,7 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
             "input_signal_length": NeuralType(tuple('B'), LengthsType(), optional=True),
             "processed_signal": NeuralType(('B', 'D', 'T'), SpectrogramType(), optional=True),
             "processed_signal_length": NeuralType(tuple('B'), LengthsType(), optional=True),
+            "language_ids": NeuralType(tuple('B'), StringType(), optional=True)
         }
 
     @property

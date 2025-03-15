@@ -394,7 +394,7 @@ class GreedyRNNTInfer(_GreedyRNNTInfer):
                     logitlen = encoded_lengths[batch_idx]
 
                     partial_hypothesis = partial_hypotheses[batch_idx] if partial_hypotheses is not None else None
-                    hypothesis = self._greedy_decode(inseq, logitlen, partial_hypotheses=partial_hypothesis)
+                    hypothesis = self._greedy_decode(inseq, logitlen, partial_hypotheses=partial_hypothesis, language_ids=language_ids)
                     hypotheses.append(hypothesis)
 
             # Pack results into Hypotheses
@@ -407,7 +407,7 @@ class GreedyRNNTInfer(_GreedyRNNTInfer):
 
     @torch.no_grad()
     def _greedy_decode(
-        self, x: torch.Tensor, out_len: torch.Tensor, partial_hypotheses: Optional[rnnt_utils.Hypothesis] = None
+        self, x: torch.Tensor, out_len: torch.Tensor, partial_hypotheses: Optional[rnnt_utils.Hypothesis] = None, language_ids: Optional[List[str]] = None
     ):
         # x: [T, 1, D]
         # out_len: [seq_len]
@@ -454,7 +454,7 @@ class GreedyRNNTInfer(_GreedyRNNTInfer):
                 # Perform prediction network and joint network steps.
                 g, hidden_prime = self._pred_step(last_label, hypothesis.dec_state)
                 # If preserving per-frame confidence, log_normalize must be true
-                logp = self._joint_step(f, g, log_normalize=True if self.preserve_frame_confidence else None)[
+                logp = self._joint_step(f, g, log_normalize=True if self.preserve_frame_confidence else None, language_ids=language_ids)[
                     0, 0, 0, :
                 ]
 
