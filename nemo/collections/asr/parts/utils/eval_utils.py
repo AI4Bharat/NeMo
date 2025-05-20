@@ -1,4 +1,4 @@
-# Copyright (c) 2023, NVIDIA CORPORATION.  All rights reserved.
+git # Copyright (c) 2023, NVIDIA CORPORATION.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -190,6 +190,9 @@ def cal_write_wer(
                 return None, None, eval_metric
 
             hyp = sample[pred_text_attr_name].strip()
+            if sample[gt_text_attr_name] is None:
+                print('SKIPPING',sample)
+                continue
             ref = sample[gt_text_attr_name].strip()
 
             if clean_groundtruth_text:

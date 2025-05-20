@@ -376,6 +376,7 @@ def get_tarred_dataset(
                 global_rank=global_rank,
                 world_size=world_size,
                 return_sample_id=config.get('return_sample_id', False),
+                return_language_id=config.get('return_language_id', False), #CTEMO
             )
         else:
             dataset = audio_to_text.TarredAudioToBPEDataset(
@@ -395,6 +396,7 @@ def get_tarred_dataset(
                 global_rank=global_rank,
                 world_size=world_size,
                 return_sample_id=config.get('return_sample_id', False),
+                return_language_id=config.get('return_language_id', False), #CTEMO
             )
         if bucketing_weights:
             [datasets.append(dataset) for _ in range(bucketing_weights[dataset_idx])]

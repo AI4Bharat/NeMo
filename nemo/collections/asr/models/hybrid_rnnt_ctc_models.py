@@ -628,7 +628,7 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin):
     def predict_step(self, batch, batch_idx, dataloader_idx=0):
         # TODO: add support for CTC decoding
         if "multisoftmax" not in self.cfg.decoder: #CTEMO
-            signal, signal_len, transcript, transcript_len = batch
+            signal, signal_len, transcript, transcript_len, sample_ids = batch
             language_ids = None
         else:
             signal, signal_len, transcript, transcript_len, sample_ids, language_ids = batch

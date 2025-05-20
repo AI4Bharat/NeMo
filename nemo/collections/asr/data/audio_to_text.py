@@ -841,6 +841,7 @@ class _TarredAudioToTextDataset(IterableDataset):
         global_rank: int = 0,
         world_size: int = 0,
         return_sample_id: bool = False,
+        return_language_id: bool = False,
     ):
         self.shard_manifests = shard_manifests
 
@@ -852,7 +853,7 @@ class _TarredAudioToTextDataset(IterableDataset):
             world_size=world_size,
             global_rank=global_rank,
         )
-
+        print(global_rank, manifest_filepath[0], manifest_filepath[-1])
         # If necessary, cache manifests from object store
         cache_datastore_manifests(manifest_filepaths=manifest_filepath)
 
@@ -876,7 +877,8 @@ class _TarredAudioToTextDataset(IterableDataset):
         self.bos_id = bos_id
         self.pad_id = pad_id
         self.return_sample_id = return_sample_id
-
+        self.return_language_id = return_language_id
+        
         audio_tar_filepaths = expand_sharded_filepaths(
             sharded_filepaths=audio_tar_filepaths,
             shard_strategy=shard_strategy,
@@ -966,6 +968,7 @@ class _TarredAudioToTextDataset(IterableDataset):
 
         manifest_idx = self.manifest_processor.collection.mapping[file_id][offset_id]
         manifest_entry = self.manifest_processor.collection[manifest_idx]
+        # print(manifest_entry)
 
         offset = manifest_entry.offset
         if offset is None:
@@ -996,6 +999,9 @@ class _TarredAudioToTextDataset(IterableDataset):
         if self.eos_id is not None:
             t = t + [self.eos_id]
             tl += 1
+
+        if self.return_language_id:
+            return f, fl, torch.tensor(t).long(), torch.tensor(tl).long(), manifest_idx, manifest_entry.lang
 
         if self.return_sample_id:
             return f, fl, torch.tensor(t).long(), torch.tensor(tl).long(), manifest_idx
@@ -1264,6 +1270,7 @@ class TarredAudioToBPEDataset(_TarredAudioToTextDataset):
         global_rank: int = 0,
         world_size: int = 0,
         return_sample_id: bool = False,
+        return_language_id: bool = False # CTEMO
     ):
         if use_start_end_token and hasattr(tokenizer, "bos_id") and tokenizer.bos_id > 0:
             bos_id = tokenizer.bos_id
@@ -1282,7 +1289,7 @@ class TarredAudioToBPEDataset(_TarredAudioToTextDataset):
 
         class TokenizerWrapper:
             def __init__(self, tokenizer):
-                if isinstance(tokenizer, tokenizers.aggregate_tokenizer.AggregateTokenizer):
+                if isinstance(tokenizer, tokenizers.aggregate_tokenizer.AggregateTokenizer) or isinstance(tokenizer, tokenizers.multilingual_tokenizer.MultilingualTokenizer): #CTEMO
                     self.is_aggregate = True
                 else:
                     self.is_aggregate = False
@@ -1317,6 +1324,7 @@ class TarredAudioToBPEDataset(_TarredAudioToTextDataset):
             global_rank=global_rank,
             world_size=world_size,
             return_sample_id=return_sample_id,
+            return_language_id=return_language_id, #CTEMO
         )
 
 
@@ -1376,6 +1384,7 @@ class RandomizedChainDataset(ChainDataset):
         self.rnd_gen = np.random.RandomState(rnd_seed)
 
     def __iter__(self):
+        print('HEREEEHEHE', len(self.datasets))
         shuffled_order = self.rnd_gen.permutation(len(self.datasets))
         for dataset_idx in shuffled_order:
             d = self.datasets[dataset_idx]

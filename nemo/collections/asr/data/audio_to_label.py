@@ -33,7 +33,7 @@ VALID_FILE_FORMATS = ';'.join(['wav', 'mp3', 'flac', 'opus'] + [fmt.lower() for 
 
 def repeat_signal(signal: torch.Tensor, sig_len: int, required_length: int) -> torch.Tensor:
     """repeat signal to make short signal to have required_length
-    Args:
+    Args:ConcatDataset
         signal (Tensor): input signal
         sig_len (int): length of input signal
         required_length (int): length of generated signal
