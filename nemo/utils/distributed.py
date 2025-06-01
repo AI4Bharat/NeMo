@@ -138,7 +138,7 @@ def webdataset_split_by_workers(src):
     if worker_info is not None:
         worker = worker_info.id
         num_workers = worker_info.num_workers
-
+    print('CHECKING',num_workers, src)
     if num_workers > 1:
         yield from list(src)[worker::num_workers]
     else:

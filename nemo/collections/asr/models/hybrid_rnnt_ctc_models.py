@@ -361,7 +361,7 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin):
             language_ids = None
         else:
             signal, signal_len, transcript, transcript_len, sample_ids, language_ids = batch
-
+        # logging.info(str((self._trainer.global_step, sample_ids[0],sample_ids[-1], (sample_ids[0].item() % 1494))))
         # forward() only performs encoder forward
         if isinstance(batch, DALIOutputs) and batch.has_processed_signal:
             encoded, encoded_len = self.forward(processed_signal=signal, processed_signal_length=signal_len)

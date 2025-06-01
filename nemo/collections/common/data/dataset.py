@@ -79,7 +79,7 @@ class ConcatDataset(IterableDataset):
             self.index_generator = ConcatDataset.round_robin_generator
         else:
             raise ValueError(f"Currently we only support sampling techniques in {supported_sampling_techniques}.")
-        self.length = 0
+        self.length = 0 # inconcat dataset, one epoch would roughly mean 
 
         if isinstance(datasets[0], IterableDataset):
             self.kind = 'iterable'
@@ -94,7 +94,7 @@ class ConcatDataset(IterableDataset):
             if self.kind == 'map':
                 self.length += len(dataset) // world_size
             else:
-                self.length += len(dataset)
+                self.length += len(dataset) // world_size
 
         if self.sampling_scale != 1:
             self.length = int(self.length * self.sampling_scale)
@@ -163,15 +163,17 @@ class ConcatDataset(IterableDataset):
         np_rng = np.random.RandomState(seed)
         lengths = []
         num = len(datasets)
-        for dataset in datasets:
-            lengths.append(len(dataset))
+        print('SKIPPING CALCULATION')
+        # for dataset in datasets:
+        #     lengths.append(len(dataset))
 
-        p = np.array(lengths) / np.sum(lengths)
-        p = np.power(p, 1 / temp)
-        p = p / np.sum(p)
+        # p = np.array(lengths) / np.sum(lengths)
+        # p = np.power(p, 1 / temp)
+        # p = p / np.sum(p)
 
         while True:
-            ind = np_rng.choice(np.arange(num), p=p)
+            # ind = np_rng.choice(np.arange(num), p=p)
+            ind = np_rng.choice(np.arange(num))
             yield ind
 
     @staticmethod

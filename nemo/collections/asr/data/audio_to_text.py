@@ -885,13 +885,14 @@ class _TarredAudioToTextDataset(IterableDataset):
             world_size=world_size,
             global_rank=global_rank,
         )
-
+        # print(audio_tar_filepaths)
         # Put together WebDataset pipeline
         self._dataset = wds.DataPipeline(
             wds.SimpleShardList(urls=audio_tar_filepaths),
             webdataset_split_by_workers,
-            wds.shuffle(shuffle_n),
+            wds.shuffle(len(audio_tar_filepaths)),
             wds.tarfile_to_samples(),
+            wds.shuffle(shuffle_n),
             wds.rename(audio=VALID_FILE_FORMATS, key='__key__'),
             wds.to_tuple('audio', 'key'),
             self._filter,
@@ -1384,7 +1385,6 @@ class RandomizedChainDataset(ChainDataset):
         self.rnd_gen = np.random.RandomState(rnd_seed)
 
     def __iter__(self):
-        print('HEREEEHEHE', len(self.datasets))
         shuffled_order = self.rnd_gen.permutation(len(self.datasets))
         for dataset_idx in shuffled_order:
             d = self.datasets[dataset_idx]
