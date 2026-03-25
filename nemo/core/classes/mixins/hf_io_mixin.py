@@ -16,7 +16,7 @@ from abc import ABC
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Union
 
-from huggingface_hub import HfApi, ModelCard, ModelCardData, ModelFilter
+from huggingface_hub import HfApi, ModelCard, ModelCardData
 from huggingface_hub import get_token as get_hf_token
 from huggingface_hub.hf_api import ModelInfo
 from huggingface_hub.utils import SoftTemporaryDirectory
@@ -35,7 +35,7 @@ class HuggingFaceFileIO(ABC):
     """
 
     @classmethod
-    def get_hf_model_filter(cls) -> ModelFilter:
+    def get_hf_model_filter(cls) -> dict:
         """
         Generates a filter for HuggingFace models.
 
@@ -46,19 +46,20 @@ class HuggingFaceFileIO(ABC):
             limit_results: Optional int, limits the number of results returned.
 
         Returns:
-            A Hugging Face Hub ModelFilter object.
+            A dict containing filtering arguments and metadata controls:
+            - library: Filtering models by a framework/library tag.
+            - resolve_card_info
+            - limit_results
         """
-        model_filter = ModelFilter(library='nemo')
-
-        # Attach some additional info
-        model_filter.resolve_card_info = False
-        model_filter.limit_results = None
-
-        return model_filter
+        return {
+            "library": "nemo",
+            "resolve_card_info": False,
+            "limit_results": None
+        }
 
     @classmethod
     def search_huggingface_models(
-        cls, model_filter: Optional[Union[ModelFilter, List[ModelFilter]]] = None
+        cls, model_filter: Optional[Union[Dict, List[Dict]]] = None
     ) -> List['ModelInfo']:
         """
         Should list all pre-trained models available via Hugging Face Hub.
@@ -96,10 +97,8 @@ class HuggingFaceFileIO(ABC):
             model = ModelPT.from_pretrained(card.modelId)
 
         Args:
-            model_filter: Optional ModelFilter or List[ModelFilter] (from Hugging Face Hub)
-                that filters the returned list of compatible model cards, and selects all results from each filter.
-                Users can then use `model_card.modelId` in `from_pretrained()` to restore a NeMo Model.
-                If no ModelFilter is provided, uses the classes default filter as defined by `get_hf_model_filter()`.
+            model_filter (dict or list of dicts, optional): Contains filter parameters and metadata keys.
+                If not provided, it uses the default filter returned by `get_hf_model_filter()`.
 
         Returns:
             A list of ModelInfo entries.
@@ -109,47 +108,43 @@ class HuggingFaceFileIO(ABC):
             model_filter = cls.get_hf_model_filter()
 
         # If single model filter, wrap into list
-        if not isinstance(model_filter, Iterable):
+        if not isinstance(model_filter, dict):
             model_filter = [model_filter]
-
-        # Inject `nemo` library filter
-        for mfilter in model_filter:
-            if isinstance(mfilter.library, str) and mfilter.library != 'nemo':
-                logging.warning(f"Model filter's `library` tag updated be `nemo`. Original value: {mfilter.library}")
-                mfilter.library = "nemo"
-
-            elif isinstance(mfilter, Iterable) and 'nemo' not in mfilter.library:
-                logging.warning(
-                    f"Model filter's `library` list updated to include `nemo`. Original value: {mfilter.library}"
-                )
-                mfilter.library = list(mfilter)
-                mfilter.library.append('nemo')
 
         # Check if api token exists, use if it does
         hf_token = get_hf_token()
-
-        # Search for all valid models after filtering
         api = HfApi()
+        all_results = []
 
-        # Setup extra arguments for model filtering
-        all_results = []  # type: List[ModelInfo]
-
+        # Inject 'nemo' library filter
         for mfilter in model_filter:
-            cardData = None
-            limit = None
+            mfilter = mfilter.copy()  # Avoid side effects
 
-            if hasattr(mfilter, 'resolve_card_info') and mfilter.resolve_card_info is True:
-                cardData = True
+            # Ensure that 'nemo' is always included in the library filter 
+            lib = mfilter.get("library")
+            if isinstance(lib, str):
+                if lib != "nemo":
+                    logging.warning(f"Model filter's `library` tag updated to 'nemo'. Original value: {lib}")
+                mfilter["library"] = "nemo"
+            elif isinstance(lib, Iterable) and "nemo" not in lib:
+                logging.warning(f"Appending 'nemo' to model filter libraries: {lib}")
+                mfilter["library"] = list(lib) + ["nemo"]
 
-            if hasattr(mfilter, 'limit_results') and mfilter.limit_results is not None:
-                limit = mfilter.limit_results
+            # Extract metadata controls
+            card_data = mfilter.pop("resolve_card_info", False)
+            limit = mfilter.pop("limit_results", None)
 
+            # Call Hugging Face Hub
             results = api.list_models(
-                filter=mfilter, token=hf_token, sort="lastModified", direction=-1, cardData=cardData, limit=limit,
-            )  # type: Iterable[ModelInfo]
+                token=hf_token,
+                sort="lastModified",
+                direction=-1,
+                cardData=card_data,
+                limit=limit,
+                **mfilter
+            )
 
-            for result in results:
-                all_results.append(result)
+            all_results.extend(results)
 
         return all_results
 
