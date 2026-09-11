@@ -201,3 +201,27 @@ class TestAudioSegment:
             _ = perturber.perturb(audio)
 
             assert len(audio._samples) == ori_audio_len + 2 * dur * self.sample_rate
+
+    def test_convert_samples_to_float32_signed_integer(self):
+        samples = np.array([0, 32767, -32768], dtype=np.int16)
+
+        result = AudioSegment._convert_samples_to_float32(samples)
+
+        assert result.dtype == np.float32
+        assert result[0] == 0.0
+        assert result[1] == pytest.approx(32767 / 32768)
+        assert result[2] == pytest.approx(-1.0)
+
+    def test_convert_samples_to_float32_float(self):
+        samples = np.array([0.0, 0.5, -0.5], dtype=np.float32)
+
+        result = AudioSegment._convert_samples_to_float32(samples)
+
+        assert result.dtype == np.float32
+        np.testing.assert_allclose(result, samples)
+
+    def test_convert_samples_to_float32_unsigned_integer(self):
+        samples = np.array([0, 127, 255], dtype=np.uint8)
+
+        with pytest.raises(TypeError, match="Unsupported sample type"):
+            AudioSegment._convert_samples_to_float32(samples)
